@@ -1,0 +1,4 @@
+# デプロイ先は Linux。シェルスクリプトは CRLF になると動かないので LF 固定。
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.yaml text eol=lf

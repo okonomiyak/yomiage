@@ -108,6 +108,19 @@ Discord のボイスチャンネル参加者に対し、指定テキストチャ
 | ログ | tracing + tracing-subscriber | |
 | 実行環境 | Docker（distroless or debian-slim） | iwaserver / Proxmox LXC |
 
+### 5.1 固定バージョン（フェーズ 1 時点）
+
+API 破壊が多い 3 つは `Cargo.toml` で `=` 完全固定。上げるときは docs.rs / examples を読み直すこと。
+
+| クレート | 固定 | メモ |
+| --- | --- | --- |
+| poise | `=0.6.2` | serenity 0.12 系に対応 |
+| serenity | `=0.12.5` | `default-features = false` + `voice` / `cache` など必要分のみ |
+| songbird | `=0.6.0` | serenity `^0.12` 対応。symphonia は `^0.5` 系（0.6 ではない）|
+
+- songbird 0.6 の Opus は `opus2`（Rust 実装）に置き換わっており、**外部 libopus / cmake は不要**。Windows でも `cargo build` が通る。
+- docs.rs の songbird 0.6.0 はビルドに失敗しているため、API 確認は GitHub の `v0.6.0` タグの examples を見ること。
+
 ---
 
 ## 6. アーキテクチャ
