@@ -12,8 +12,13 @@ services:
   # 127.0.0.1 にしか出していないので、そのままでは LAN の外から叩けない。
   # profiles を付けてあるので既定では起動しない。必要なときだけ:
   #
-  #   docker compose -f compose.yaml -f compose.dev.yaml --profile tunnel up -d
-  #   ssh -N -L 50021:<このホストの IP>:50022 root@<Proxmox ホスト>   # 手元のマシンで
+  #   docker compose -f compose.yaml -f compose.dev.yaml up -d engine-tunnel
+  #   ssh -N -L 50121:<このホストの IP>:50022 root@<Proxmox ホスト>   # 手元のマシンで
+  #
+  # 手元が Windows のときローカル側を 50021 にしないこと。Windows は 50000-50059 を
+  # 予約済みポート範囲に持っていることがあり（netsh interface ipv4 show excludedportrange
+  # protocol=tcp で確認）、bind が Permission denied で弾かれる。50121 のように範囲外を使い、
+  # VOICEVOX_URL も合わせる。
   #
   # ホストの全インターフェースの 50022 に出ることに注意。使い終わったら落とすこと。
   engine-tunnel:
