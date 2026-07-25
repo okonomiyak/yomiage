@@ -65,7 +65,9 @@ impl Client {
             .get(format!("{}/version", self.base))
             .send()
             .await?;
-        Ok(check(res).await?.text().await?)
+        // /version は JSON 文字列（"0.25.2"）を返すので引用符を落とす。
+        let version = check(res).await?.text().await?;
+        Ok(version.trim().trim_matches('"').to_owned())
     }
 
     /// 話者のウォームアップ。起動時に叩いておかないと初回発話がモデルロードで待たされる（PLAN §7 補足）。
