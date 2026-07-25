@@ -4,6 +4,11 @@
 
 # cargo-chef 入りの公式イメージ。rust のバージョンはタグで固定する。
 FROM lukemathwalker/cargo-chef:latest-rust-1.92-bookworm AS chef
+# songbird の Opus は opus2 -> libopus_sys で、ビルドスクリプトが cmake を呼ぶ。
+# 入れないと "failed to execute command: No such file or directory" で落ちる。
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends cmake pkg-config \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
 FROM chef AS planner

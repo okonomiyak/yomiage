@@ -131,7 +131,7 @@ API 破壊が多い 3 つは `Cargo.toml` で `=` 完全固定。上げるとき
 | serenity | `=0.12.5` | `default-features = false` + `voice` / `cache` など必要分のみ |
 | songbird | `=0.6.0` | serenity `^0.12` 対応。symphonia は `^0.5` 系（0.6 ではない）|
 
-- songbird 0.6 の Opus は `opus2`（Rust 実装）に置き換わっており、**外部 libopus / cmake は不要**。Windows でも `cargo build` が通る。
+- songbird 0.6 の Opus は `opus2` 経由。**`opus2` → `libopus_sys` のビルドスクリプトが `cmake` を呼ぶ**ので、ビルド環境に cmake が要る（Debian のビルダーイメージには入っていない。入れないと `failed to execute command: No such file or directory` で落ちる）。libopus は静的リンクされるので**実行イメージ側には何も要らない**。手元の Windows は cmake が入っていたので気付かず通っていた。
 - docs.rs の songbird 0.6.0 はビルドに失敗しているため、API 確認は GitHub の `v0.6.0` タグの examples を見ること。
 - **symphonia を自分で依存に足すこと（重要）**。songbird は symphonia を `default-features = false` で入れており、コーデックを 1 つも有効にしない。songbird が足すのは Opus / DCA / 生 PCM だけなので、**wav を再生するには `symphonia = { features = ["wav", "pcm"] }` が必須**。無いと合成は成功するのに再生だけ黙って失敗する。`speech::tests::engine_wav_is_playable_by_songbird` が回帰テスト（依存を外すと実際に落ちることを確認済み）。
 
@@ -341,7 +341,23 @@ networks:
 | 2. 読み上げ | 固定話者でメッセージ読み上げ、キュー実装 | 連投しても順に読む | **実装完了 2026-07-26**（ENGINE 疎通テストは実機で通過。連投の手動確認待ち）|
 | 3. 個人設定 | SQLite 永続化、`/voice` 等 | 再起動後も設定が残る | 未着手（§13-2, §13-3 の回答待ち）|
 | 4. 実用化 | テキスト正規化、辞書、自動退出、**入退室アナウンス（§7.1）**、エラーハンドリング | 日常利用に耐える | 未着手 |
-| 5. 運用 | Docker 化、Proxmox LXC へデプロイ、スナップショット設定 | 常時稼働・ロールバック可能 | 未着手 |
+| 5. 運用 | Docker 化、Proxmox LXC へデプロイ、スナップショット設定 | 常時稼働・ロールバック可能 | **一部前倒し 2026-07-26**（Dockerfile / compose / deploy.sh は完了。スナップショットと vzdump は未着手）|
+
+### 11.2 開発の回し方（Docker 化以降）
+
+手元で `cargo run` する必要は無くなった。ENGINE と Bot が同じ compose ネットワークに載るので、SSH トンネルも `VOICEVOX_URL` の付け替えも不要。
+
+```sh
+# 手元（リポジトリのルート）で
+git commit ...
+sh scripts/deploy.sh          # HEAD を LXC へ送ってビルド・再起動
+ssh root@<Proxmox ホスト> "pct exec 110 -- docker logs -f yomiage-bot"
+```
+
+- `deploy.sh` は `git archive HEAD` を送るので、**コミットしていない変更は反映されない**（警告は出る）。
+- `.env`（実トークン）は deploy 対象外。LXC の `/opt/yomiage/.env` に置いたまま触らない。
+- 依存を変えなければ cargo-chef のキャッシュが効き、再ビルドは src の分だけで済む。
+- 手元から `cargo test -- --ignored` を回したいときだけ `compose.dev.yaml` の `engine-tunnel` を起動する。
 
 ### 11.1 フェーズ 2 に入る前の申し送り
 
