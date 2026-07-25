@@ -1,0 +1,9 @@
+# ローカル検証用のオーバーレイ。ENGINE をホストの 50021 に公開して curl / cargo test から
+# 直接叩けるようにする。本番（§10.3）は expose のみで外に出さないため、こちらは
+# 明示的に -f で指定したときだけ効くようにしてある（compose.override.yaml にはしない）。
+#
+#   docker compose -f compose.yaml -f compose.dev.yaml up -d voicevox
+services:
+  voicevox:
+    ports:
+      - "127.0.0.1:50021:50021"

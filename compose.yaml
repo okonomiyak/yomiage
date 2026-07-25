@@ -1,0 +1,34 @@
+services:
+  voicevox:
+    image: voicevox/voicevox_engine:cpu-0.25.2   # latest は使わない（2026-07 時点の安定版）
+    container_name: voicevox
+    restart: unless-stopped
+    environment:
+      - VV_CPU_NUM_THREADS=2
+    expose:
+      - "50021"           # ホストには公開せず内部ネットワークのみ
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:50021/version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks: [yomiage]
+
+  # Dockerfile はフェーズ 5 で追加する。それまでは `docker compose up -d voicevox` で
+  # ENGINE のみ起動すること（このサービスを up するとビルドに失敗する）。
+  yomiage-bot:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      voicevox:
+        condition: service_healthy
+    environment:
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - VOICEVOX_URL=http://voicevox:50021
+      - DATABASE_URL=sqlite:/data/bot.db
+    volumes:
+      - ./data:/data
+    networks: [yomiage]
+
+networks:
+  yomiage:
