@@ -32,9 +32,22 @@ pub async fn join(ctx: Context<'_>) -> Result<(), Error> {
 
     match manager.join(guild_id, voice_channel).await {
         Ok(_call) => {
-            tracing::info!(%guild_id, %voice_channel, "joined voice channel");
-            ctx.say(format!("<#{voice_channel}> に参加しました。"))
-                .await?;
+            // 実行チャンネルを読み上げ対象に追加する（PLAN §3 / §13-3 で複数登録可）。
+            let text_channel = ctx.channel_id();
+            let added = ctx
+                .data()
+                .read_channels
+                .write()
+                .await
+                .entry(guild_id)
+                .or_default()
+                .insert(text_channel);
+
+            tracing::info!(%guild_id, %voice_channel, %text_channel, added, "joined voice channel");
+            ctx.say(format!(
+                "<#{voice_channel}> に参加しました。<#{text_channel}> の発言を読み上げます。"
+            ))
+            .await?;
         }
         Err(error) => {
             tracing::warn!(%guild_id, %voice_channel, ?error, "failed to join voice channel");
@@ -63,6 +76,10 @@ pub async fn leave(ctx: Context<'_>) -> Result<(), Error> {
 
     match manager.remove(guild_id).await {
         Ok(()) => {
+            // キューを捨てて登録も全部外す（PLAN §3）。
+            ctx.data().speech.stop(guild_id).await;
+            ctx.data().read_channels.write().await.remove(&guild_id);
+
             tracing::info!(%guild_id, "left voice channel");
             ctx.say("ボイスチャンネルから切断しました。").await?;
         }

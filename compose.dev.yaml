@@ -7,3 +7,21 @@ services:
   voicevox:
     ports:
       - "127.0.0.1:50021:50021"
+
+  # 別マシンで cargo test / cargo run するとき用のトンネル。ENGINE は上のとおり
+  # 127.0.0.1 にしか出していないので、そのままでは LAN の外から叩けない。
+  # profiles を付けてあるので既定では起動しない。必要なときだけ:
+  #
+  #   docker compose -f compose.yaml -f compose.dev.yaml --profile tunnel up -d
+  #   ssh -N -L 50021:<このホストの IP>:50022 root@<Proxmox ホスト>   # 手元のマシンで
+  #
+  # ホストの全インターフェースの 50022 に出ることに注意。使い終わったら落とすこと。
+  engine-tunnel:
+    image: alpine/socat:latest
+    profiles: [tunnel]
+    restart: unless-stopped
+    depends_on: [voicevox]
+    command: TCP-LISTEN:50021,fork,reuseaddr TCP:voicevox:50021
+    ports:
+      - "50022:50021"
+    networks: [yomiage]
