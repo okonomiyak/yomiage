@@ -64,9 +64,9 @@ Discord のボイスチャンネル参加者に対し、指定テキストチャ
 
 | コマンド | 内容 |
 | --- | --- |
-| `/join` | 実行者が居る VC に接続。実行チャンネルを読み上げ対象に登録 |
-| `/leave` | VC から切断、キュー破棄 |
-| `/voice <speaker>` | 自分の話者を設定（オートコンプリートで一覧提示） |
+| `/join` | 実行者が居る VC に接続。実行チャンネルを読み上げ対象に**追加**（§13-3 で複数登録可に決定）|
+| `/leave` | VC から切断、キュー破棄、登録チャンネルを全解除 |
+| `/voice <speaker>` | 自分の話者を設定（オートコンプリートで一覧提示）。**ユーザー単位でギルド横断**（§13-2）|
 | `/speed` `/pitch` `/intonation` | 音声パラメータ設定 |
 | `/dict add <表記> <読み>` | ユーザー辞書登録（サーバー単位） |
 | `/dict list` `/dict remove` | 辞書の確認・削除 |
@@ -179,6 +179,19 @@ Discord Gateway
 6. **キュー投入**: `SpeechTask { guild_id, wav: Vec<u8> }` を送信
 7. **再生**: songbird の `Call::play_input()` に wav を渡す。再生完了を待って次へ
 
+### 7.1 発言者名の前置（§13-4 の決定）
+
+毎回名前を読むと冗長なので、**条件付きで前置**する。正規化後のテキストに `"{名前}、"` を足す。
+
+- 前置する条件（どちらかを満たしたとき）
+  1. 直前に読み上げたのが**別のユーザー**の発言だったとき（話者交代）
+  2. 同じユーザーでも、**直前の読み上げから 30 秒以上**空いたとき
+- `/join` 直後の最初の 1 発言は必ず前置する（直前の記録が無いため上記 1 に該当）。
+- 読み上げる名前は **サーバーニックネーム > 表示名(global name) > ユーザー名** の順に採用する。
+- 名前自体も §7-3 の正規化を通す（絵文字だらけのニックネーム対策）。名前が正規化後に空になったらその回は前置しない。
+- 判定状態はギルド単位でメモリに持つ（`(直前の user_id, 直前の読み上げ時刻)`）。永続化しない。
+- **30 秒は暫定値**。運用してみて調整する。設定コマンド化は必要になってから。
+
 ### 補足
 
 - **先読み合成**: キューが空でない間に次のメッセージを並行合成しておくと体感遅延が減る（合成 CPU に余裕がある場合）
@@ -203,23 +216,30 @@ Discord Gateway
 
 ## 9. データモデル（SQLite）
 
+§13 の 2 / 3 / 4 の決定（2026-07-26）を反映済み。
+
 ```sql
 CREATE TABLE guild_settings (
     guild_id      INTEGER PRIMARY KEY,
-    read_channel  INTEGER,          -- 読み上げ対象チャンネル
     max_length    INTEGER DEFAULT 100,
     read_bots     INTEGER DEFAULT 0,
     ignore_prefix TEXT DEFAULT ';'
 );
 
-CREATE TABLE user_voice (
+-- §13-3: 読み上げ対象チャンネルは 1 ギルドに複数登録できる
+CREATE TABLE read_channels (
     guild_id   INTEGER NOT NULL,
-    user_id    INTEGER NOT NULL,
+    channel_id INTEGER NOT NULL,
+    PRIMARY KEY (guild_id, channel_id)
+);
+
+-- §13-2: 話者設定はユーザー単位でギルド横断。guild_id は持たない
+CREATE TABLE user_voice (
+    user_id    INTEGER PRIMARY KEY,
     speaker    INTEGER NOT NULL DEFAULT 3,   -- ずんだもん(ノーマル)
     speed      REAL    NOT NULL DEFAULT 1.0,
     pitch      REAL    NOT NULL DEFAULT 0.0,
-    intonation REAL    NOT NULL DEFAULT 1.0,
-    PRIMARY KEY (guild_id, user_id)
+    intonation REAL    NOT NULL DEFAULT 1.0
 );
 
 CREATE TABLE dictionary (
@@ -331,13 +351,17 @@ networks:
 
 ---
 
-## 13. 未決事項（実装前に確認すること）
+## 13. 未決事項
 
-1. 対象は自分のサーバーのみか、公開 Bot にするか（公開するなら §12 の負荷・権限設計を厚くする）
-2. 話者設定はギルド単位で持つ（現行スキーマ）か、ユーザー単位でギルド横断にするか
-3. 読み上げ対象チャンネルを複数登録できるようにするか（現行スキーマは 1 ギルド 1 チャンネル）
-4. 発言者名の読み上げ（「いわ、こんにちは」）が必要か。必要なら「N 秒以上間が空いたときだけ前置」が実用的
-5. LXC で行くか VM で行くか（§10.1、実機で判断）
+1. **未決**: 対象は自分のサーバーのみか、公開 Bot にするか（公開するなら §12 の負荷・権限設計を厚くする）
+2. **決定 2026-07-26: ユーザー単位でギルド横断**。`user_voice` の主キーは `user_id` のみ（§9）。どのサーバーでも同じ声になる。
+3. **決定 2026-07-26: 複数登録できるようにする**。`read_channels` テーブルへ分離（§9）。キューはギルドごとに 1 本のままで、複数チャンネルの発言が同じキューに合流する（§6）。
+4. **決定 2026-07-26: 発言者名を読み上げる**。前置ルールは §7.1。
+5. **決定 2026-07-26: LXC で行く**。LXC 110（Debian 13, unprivileged, nesting+keyctl）上の Docker で ENGINE が問題なく動くことをフェーズ 0 で確認済み。
+
+### 13.1 決定 3 から派生した未決事項
+
+複数チャンネル登録にしたことで、**登録解除の手段**が仕様に無い状態になった。現状の想定は「`/join` = 実行チャンネルを追加、`/leave` = 切断して**全登録を破棄**」だが、切断せずに 1 チャンネルだけ外す操作ができない。フェーズ 3（`/config` 実装）までに決めること。
 
 ---
 
