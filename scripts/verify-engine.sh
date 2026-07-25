@@ -27,7 +27,8 @@ curl -fsS -m 5 "$BASE/version"
 printf '\n'
 
 say "2. 話者一覧 GET /speakers （先頭 20 行）"
-curl -fsS -m 10 "$BASE/speakers" | tr ',' '\n' | grep -E '"(name|id)"' | head -20
+# head だと grep 側が SIGPIPE で write error を出すので awk で打ち切る
+curl -fsS -m 10 "$BASE/speakers" | tr ',' '\n' | grep -E '"(name|id)"' | awk 'NR<=20'
 
 say "3. ウォームアップ POST /initialize_speaker?speaker=$SPEAKER"
 start=$(date +%s)
