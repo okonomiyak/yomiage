@@ -130,6 +130,7 @@ API 破壊が多い 3 つは `Cargo.toml` で `=` 完全固定。上げるとき
 | poise | `=0.6.2` | serenity 0.12 系に対応 |
 | serenity | `=0.12.5` | `default-features = false` + `voice` / `cache` など必要分のみ |
 | songbird | `=0.6.0` | serenity `^0.12` 対応。symphonia は `^0.5` 系（0.6 ではない）|
+| sqlx | `=0.8.6` | **0.9 系は Rust 1.94 以上を要求する**ため見送り（手元と Docker ビルダーは 1.92）。0.9 では sqlite の feature 名が `sqlite` → `sqlite-bundled` に変わっているので、上げるときは注意 |
 
 - songbird 0.6 の Opus は `opus2` 経由。**`opus2` → `libopus_sys` のビルドスクリプトが `cmake` を呼ぶ**ので、ビルド環境に cmake が要る（Debian のビルダーイメージには入っていない。入れないと `failed to execute command: No such file or directory` で落ちる）。libopus は静的リンクされるので**実行イメージ側には何も要らない**。手元の Windows は cmake が入っていたので気付かず通っていた。
 - docs.rs の songbird 0.6.0 はビルドに失敗しているため、API 確認は GitHub の `v0.6.0` タグの examples を見ること。
@@ -339,7 +340,7 @@ networks:
 | 0. 検証 | ENGINE を Docker で起動し、curl で wav を取得 | ローカルで音が鳴る | **完了 2026-07-26**（LXC 110 / `scripts/verify-engine.sh`）|
 | 1. 骨組み | poise で `/join` `/leave`、無音接続 | VC に入退室できる | **完了 2026-07-26**（実サーバーで入退室確認）|
 | 2. 読み上げ | 固定話者でメッセージ読み上げ、キュー実装 | 連投しても順に読む | **実装完了 2026-07-26**（ENGINE 疎通テストは実機で通過。連投の手動確認待ち）|
-| 3. 個人設定 | SQLite 永続化、`/voice` 等 | 再起動後も設定が残る | 未着手（§13-2, §13-3 の回答待ち）|
+| 3. 個人設定 | SQLite 永続化、`/voice` 等 | 再起動後も設定が残る | **実装完了 2026-07-26**（デプロイ済み。手動確認待ち）|
 | 4. 実用化 | テキスト正規化、辞書、自動退出、**入退室アナウンス（§7.1）**、エラーハンドリング | 日常利用に耐える | 未着手 |
 | 5. 運用 | Docker 化、Proxmox LXC へデプロイ、スナップショット設定 | 常時稼働・ロールバック可能 | **一部前倒し 2026-07-26**（Dockerfile / compose / deploy.sh は完了。スナップショットと vzdump は未着手）|
 
