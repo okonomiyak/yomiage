@@ -14,18 +14,19 @@ services:
       retries: 3
     networks: [yomiage]
 
-  # Dockerfile はフェーズ 5 で追加する。それまでは `docker compose up -d voicevox` で
-  # ENGINE のみ起動すること（このサービスを up するとビルドに失敗する）。
   yomiage-bot:
     build: .
+    container_name: yomiage-bot
     restart: unless-stopped
     depends_on:
       voicevox:
         condition: service_healthy
     environment:
       - DISCORD_TOKEN=${DISCORD_TOKEN}
+      # 同じ compose ネットワーク内なので、ENGINE をホストに公開する必要はない。
       - VOICEVOX_URL=http://voicevox:50021
       - DATABASE_URL=sqlite:/data/bot.db
+      - RUST_LOG=${RUST_LOG:-info,yomiage_bot=debug}
     volumes:
       - ./data:/data
     networks: [yomiage]

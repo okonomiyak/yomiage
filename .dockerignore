@@ -1,0 +1,7 @@
+target/
+data/
+out/
+.git/
+.env
+docs/
+scripts/
