@@ -22,6 +22,8 @@ COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+# sqlx::migrate! はビルド時にこのディレクトリを読む。忘れるとコンパイルが落ちる。
+COPY migrations ./migrations
 RUN cargo build --release --locked
 
 FROM debian:bookworm-slim AS runtime

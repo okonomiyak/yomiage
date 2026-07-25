@@ -34,16 +34,12 @@ pub async fn join(ctx: Context<'_>) -> Result<(), Error> {
         Ok(_call) => {
             // 実行チャンネルを読み上げ対象に追加する（PLAN §3 / §13-3 で複数登録可）。
             let text_channel = ctx.channel_id();
-            let added = ctx
-                .data()
-                .read_channels
-                .write()
-                .await
-                .entry(guild_id)
-                .or_default()
-                .insert(text_channel);
+            ctx.data()
+                .db
+                .add_read_channel(guild_id, text_channel)
+                .await?;
 
-            tracing::info!(%guild_id, %voice_channel, %text_channel, added, "joined voice channel");
+            tracing::info!(%guild_id, %voice_channel, %text_channel, "joined voice channel");
             ctx.say(format!(
                 "<#{voice_channel}> に参加しました。<#{text_channel}> の発言を読み上げます。"
             ))
@@ -78,7 +74,7 @@ pub async fn leave(ctx: Context<'_>) -> Result<(), Error> {
         Ok(()) => {
             // キューを捨てて登録も全部外す（PLAN §3）。
             ctx.data().speech.stop(guild_id).await;
-            ctx.data().read_channels.write().await.remove(&guild_id);
+            ctx.data().db.clear_read_channels(guild_id).await?;
 
             tracing::info!(%guild_id, "left voice channel");
             ctx.say("ボイスチャンネルから切断しました。").await?;

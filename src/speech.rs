@@ -18,7 +18,7 @@ use songbird::input::Input;
 use songbird::{Event, EventContext, EventHandler as VoiceEventHandler, Songbird};
 use tokio::sync::{Mutex, Notify, Semaphore, mpsc};
 
-use crate::voicevox::{self, StyleId};
+use crate::voicevox::{self, Voice};
 
 /// 未合成のテキストを溜める上限。連投で溢れたぶんは捨てる（PLAN §4「キュー長上限」）。
 const TEXT_QUEUE_LIMIT: usize = 20;
@@ -31,7 +31,7 @@ const PLAYBACK_GRACE: Duration = Duration::from_secs(10);
 
 pub struct SpeechTask {
     pub text: String,
-    pub style: StyleId,
+    pub voice: Voice,
 }
 
 pub struct Manager {
@@ -93,7 +93,7 @@ impl Manager {
                     let Ok(_permit) = engine_limit.acquire().await else {
                         break;
                     };
-                    match engine.synthesize(&task.text, task.style).await {
+                    match engine.synthesize(&task.text, task.voice).await {
                         Ok(wav) => wav,
                         Err(error) => {
                             tracing::warn!(%guild_id, %error, "synthesis failed; skipping message");
@@ -169,7 +169,6 @@ impl VoiceEventHandler for Done {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::voicevox::DEFAULT_STYLE;
     use songbird::input::codecs::{get_codec_registry, get_probe};
 
     /// ENGINE が返す wav を songbird が実際にデコードできるか。
@@ -181,7 +180,7 @@ mod tests {
             std::env::var("VOICEVOX_URL").unwrap_or_else(|_| "http://localhost:50021".to_owned());
         let engine = voicevox::Client::new(&base).expect("URL が不正");
         let wav = engine
-            .synthesize("再生できるかのテストなのだ。", DEFAULT_STYLE)
+            .synthesize("再生できるかのテストなのだ。", Voice::default())
             .await
             .expect("合成に失敗");
 

@@ -26,6 +26,44 @@ impl std::fmt::Display for StyleId {
     }
 }
 
+/// ENGINE が受け付けるパラメータの範囲（VOICEVOX エディタの UI と同じ）。
+pub const SPEED_RANGE: std::ops::RangeInclusive<f32> = 0.5..=2.0;
+pub const PITCH_RANGE: std::ops::RangeInclusive<f32> = -0.15..=0.15;
+pub const INTONATION_RANGE: std::ops::RangeInclusive<f32> = 0.0..=2.0;
+
+/// ユーザーごとの声の設定（PLAN §9 の `user_voice`）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Voice {
+    pub style: StyleId,
+    pub speed: f32,
+    pub pitch: f32,
+    pub intonation: f32,
+}
+
+impl Default for Voice {
+    fn default() -> Self {
+        Self {
+            style: DEFAULT_STYLE,
+            speed: 1.0,
+            pitch: 0.0,
+            intonation: 1.0,
+        }
+    }
+}
+
+/// `/speakers` の 1 要素。キャラクターが複数のスタイルを持つ。
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct Speaker {
+    pub name: String,
+    pub styles: Vec<Style>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct Style {
+    pub name: String,
+    pub id: u32,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("ENGINE のベース URL が不正: {0}")]
@@ -82,19 +120,33 @@ impl Client {
         Ok(())
     }
 
+    /// 話者一覧。`/voice` のオートコンプリート用に呼び出し側でキャッシュする（PLAN §8）。
+    pub async fn speakers(&self) -> Result<Vec<Speaker>, Error> {
+        let res = self
+            .http
+            .get(format!("{}/speakers", self.base))
+            .send()
+            .await?;
+        Ok(check(res).await?.json().await?)
+    }
+
     /// テキスト → wav（48kHz ステレオ）。
-    pub async fn synthesize(&self, text: &str, style: StyleId) -> Result<Vec<u8>, Error> {
+    pub async fn synthesize(&self, text: &str, voice: Voice) -> Result<Vec<u8>, Error> {
         let started = Instant::now();
 
-        let mut query = self.audio_query(text, style).await?;
+        let mut query = self.audio_query(text, voice.style).await?;
         if let Some(object) = query.as_object_mut() {
+            // ユーザー設定で上書きする（PLAN §7-5）。
+            object.insert("speedScale".to_owned(), json!(voice.speed));
+            object.insert("pitchScale".to_owned(), json!(voice.pitch));
+            object.insert("intonationScale".to_owned(), json!(voice.intonation));
             object.insert("outputSamplingRate".to_owned(), json!(OUTPUT_SAMPLING_RATE));
             object.insert("outputStereo".to_owned(), json!(true));
         }
-        let wav = self.synthesis(&query, style).await?;
+        let wav = self.synthesis(&query, voice.style).await?;
 
         tracing::debug!(
-            style = %style,
+            style = %voice.style,
             chars = text.chars().count(),
             bytes = wav.len(),
             latency_ms = started.elapsed().as_millis(),
@@ -176,6 +228,17 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "ENGINE の起動が必要"]
+    async fn speakers_include_default_style() {
+        let speakers = test_client().speakers().await.expect("/speakers に失敗");
+        let found = speakers
+            .iter()
+            .flat_map(|speaker| &speaker.styles)
+            .any(|style| style.id == DEFAULT_STYLE.0);
+        assert!(found, "既定スタイル {DEFAULT_STYLE} が一覧に無い");
+    }
+
+    #[tokio::test]
+    #[ignore = "ENGINE の起動が必要"]
     async fn synthesize_returns_48khz_stereo_wav() {
         let client = test_client();
         client
@@ -183,7 +246,7 @@ mod tests {
             .await
             .expect("/initialize_speaker に失敗");
         let wav = client
-            .synthesize("これはテストなのだ。", DEFAULT_STYLE)
+            .synthesize("これはテストなのだ。", Voice::default())
             .await
             .expect("合成に失敗");
 
@@ -198,8 +261,12 @@ mod tests {
     #[tokio::test]
     #[ignore = "ENGINE の起動が必要"]
     async fn unknown_style_is_reported_as_status_error() {
+        let voice = Voice {
+            style: StyleId(99_999),
+            ..Voice::default()
+        };
         let err = test_client()
-            .synthesize("テスト", StyleId(99_999))
+            .synthesize("テスト", voice)
             .await
             .expect_err("存在しないスタイル ID なのに成功した");
         assert!(matches!(err, Error::Status { .. }), "実際のエラー: {err}");

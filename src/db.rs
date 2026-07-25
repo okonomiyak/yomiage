@@ -1,0 +1,280 @@
+//! SQLite 永続化（PLAN §9）。
+//!
+//! Discord の ID は u64、SQLite の INTEGER は i64 なので入口と出口で詰め替える。
+//! スノーフレークは 2^63 未満なので往復しても値は壊れない。
+
+use std::str::FromStr;
+
+use anyhow::Context as _;
+use poise::serenity_prelude::{ChannelId, GuildId, UserId};
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx::{Row, SqlitePool};
+
+use crate::voicevox::{StyleId, Voice};
+
+/// ギルドごとの設定（PLAN §9 の `guild_settings`）。
+#[derive(Debug, Clone)]
+pub struct GuildSettings {
+    pub max_length: usize,
+    pub read_bots: bool,
+    pub ignore_prefix: String,
+}
+
+impl Default for GuildSettings {
+    fn default() -> Self {
+        Self {
+            max_length: 100,
+            read_bots: false,
+            ignore_prefix: ";".to_owned(),
+        }
+    }
+}
+
+pub struct Db {
+    pool: SqlitePool,
+}
+
+impl Db {
+    /// 接続してマイグレーションを流す。ファイルが無ければ作る。
+    pub async fn connect(url: &str) -> anyhow::Result<Self> {
+        let options = SqliteConnectOptions::from_str(url)
+            .with_context(|| format!("DATABASE_URL が不正: {url}"))?
+            .create_if_missing(true)
+            // 読み書きが並行するので WAL にしておく。
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal);
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(4)
+            .connect_with(options)
+            .await
+            .context("SQLite に接続できない")?;
+
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .context("マイグレーションに失敗")?;
+
+        Ok(Self { pool })
+    }
+
+    // ---- 読み上げ対象チャンネル（§13-3 で複数登録可）----
+
+    pub async fn add_read_channel(
+        &self,
+        guild_id: GuildId,
+        channel_id: ChannelId,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO read_channels (guild_id, channel_id) VALUES (?, ?)
+             ON CONFLICT (guild_id, channel_id) DO NOTHING",
+        )
+        .bind(id(guild_id.get()))
+        .bind(id(channel_id.get()))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn clear_read_channels(&self, guild_id: GuildId) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM read_channels WHERE guild_id = ?")
+            .bind(id(guild_id.get()))
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn is_read_channel(
+        &self,
+        guild_id: GuildId,
+        channel_id: ChannelId,
+    ) -> anyhow::Result<bool> {
+        let row: Option<(i64,)> =
+            sqlx::query_as("SELECT 1 FROM read_channels WHERE guild_id = ? AND channel_id = ?")
+                .bind(id(guild_id.get()))
+                .bind(id(channel_id.get()))
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.is_some())
+    }
+
+    pub async fn read_channels(&self, guild_id: GuildId) -> anyhow::Result<Vec<ChannelId>> {
+        let rows: Vec<(i64,)> =
+            sqlx::query_as("SELECT channel_id FROM read_channels WHERE guild_id = ?")
+                .bind(id(guild_id.get()))
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(channel_id,)| ChannelId::new(channel_id as u64))
+            .collect())
+    }
+
+    // ---- ギルド設定 ----
+
+    /// 行が無ければ既定値を返す。`/join` した時点では行を作らない。
+    pub async fn guild_settings(&self, guild_id: GuildId) -> anyhow::Result<GuildSettings> {
+        let row = sqlx::query(
+            "SELECT max_length, read_bots, ignore_prefix FROM guild_settings WHERE guild_id = ?",
+        )
+        .bind(id(guild_id.get()))
+        .fetch_optional(&self.pool)
+        .await?;
+
+        let Some(row) = row else {
+            return Ok(GuildSettings::default());
+        };
+        Ok(GuildSettings {
+            max_length: row.try_get::<i64, _>("max_length")?.max(1) as usize,
+            read_bots: row.try_get::<i64, _>("read_bots")? != 0,
+            ignore_prefix: row.try_get("ignore_prefix")?,
+        })
+    }
+
+    // ---- ユーザーごとの声（§13-2 でギルド横断）----
+
+    pub async fn voice(&self, user_id: UserId) -> anyhow::Result<Voice> {
+        let row = sqlx::query(
+            "SELECT speaker, speed, pitch, intonation FROM user_voice WHERE user_id = ?",
+        )
+        .bind(id(user_id.get()))
+        .fetch_optional(&self.pool)
+        .await?;
+
+        let Some(row) = row else {
+            return Ok(Voice::default());
+        };
+        Ok(Voice {
+            style: StyleId(
+                row.try_get::<i64, _>("speaker")?
+                    .clamp(0, i64::from(u32::MAX)) as u32,
+            ),
+            speed: row.try_get::<f64, _>("speed")? as f32,
+            pitch: row.try_get::<f64, _>("pitch")? as f32,
+            intonation: row.try_get::<f64, _>("intonation")? as f32,
+        })
+    }
+
+    pub async fn set_style(&self, user_id: UserId, style: StyleId) -> anyhow::Result<()> {
+        self.upsert_voice(user_id, "speaker", f64::from(style.0))
+            .await
+    }
+
+    pub async fn set_speed(&self, user_id: UserId, value: f32) -> anyhow::Result<()> {
+        self.upsert_voice(user_id, "speed", f64::from(value)).await
+    }
+
+    pub async fn set_pitch(&self, user_id: UserId, value: f32) -> anyhow::Result<()> {
+        self.upsert_voice(user_id, "pitch", f64::from(value)).await
+    }
+
+    pub async fn set_intonation(&self, user_id: UserId, value: f32) -> anyhow::Result<()> {
+        self.upsert_voice(user_id, "intonation", f64::from(value))
+            .await
+    }
+
+    /// 列名は呼び出し側の固定文字列のみ（外部入力を混ぜない）。
+    async fn upsert_voice(&self, user_id: UserId, column: &str, value: f64) -> anyhow::Result<()> {
+        let sql = format!(
+            "INSERT INTO user_voice (user_id, {column}) VALUES (?, ?)
+             ON CONFLICT (user_id) DO UPDATE SET {column} = excluded.{column}"
+        );
+        sqlx::query(&sql)
+            .bind(id(user_id.get()))
+            .bind(value)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+}
+
+/// u64 の Discord ID を SQLite の INTEGER に詰める。
+fn id(value: u64) -> i64 {
+    value as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn memory_db() -> Db {
+        // ファイルを作らずにスキーマとクエリを検証する。
+        Db::connect("sqlite::memory:").await.expect("接続に失敗")
+    }
+
+    #[tokio::test]
+    async fn defaults_are_returned_when_no_row_exists() {
+        let db = memory_db().await;
+
+        let voice = db.voice(UserId::new(1)).await.expect("取得に失敗");
+        assert_eq!(voice, Voice::default());
+
+        let settings = db
+            .guild_settings(GuildId::new(1))
+            .await
+            .expect("取得に失敗");
+        assert_eq!(settings.max_length, 100);
+        assert!(!settings.read_bots);
+        assert_eq!(settings.ignore_prefix, ";");
+    }
+
+    #[tokio::test]
+    async fn voice_settings_are_updated_per_column() {
+        let db = memory_db().await;
+        let user = UserId::new(42);
+
+        db.set_style(user, StyleId(8)).await.expect("失敗");
+        db.set_speed(user, 1.5).await.expect("失敗");
+
+        let voice = db.voice(user).await.expect("失敗");
+        assert_eq!(voice.style, StyleId(8));
+        assert_eq!(voice.speed, 1.5);
+        // 触っていない列は既定値のまま。
+        assert_eq!(voice.pitch, 0.0);
+        assert_eq!(voice.intonation, 1.0);
+    }
+
+    #[tokio::test]
+    async fn read_channels_are_added_and_cleared() {
+        let db = memory_db().await;
+        let guild = GuildId::new(7);
+        let a = ChannelId::new(100);
+        let b = ChannelId::new(200);
+
+        db.add_read_channel(guild, a).await.expect("失敗");
+        db.add_read_channel(guild, b).await.expect("失敗");
+        // 二重登録しても壊れない。
+        db.add_read_channel(guild, a).await.expect("失敗");
+
+        assert!(db.is_read_channel(guild, a).await.expect("失敗"));
+        assert!(
+            !db.is_read_channel(guild, ChannelId::new(999))
+                .await
+                .expect("失敗")
+        );
+        assert_eq!(db.read_channels(guild).await.expect("失敗").len(), 2);
+
+        db.clear_read_channels(guild).await.expect("失敗");
+        assert!(db.read_channels(guild).await.expect("失敗").is_empty());
+        assert!(!db.is_read_channel(guild, a).await.expect("失敗"));
+    }
+
+    #[tokio::test]
+    async fn other_guilds_are_not_affected() {
+        let db = memory_db().await;
+        let channel = ChannelId::new(1);
+        db.add_read_channel(GuildId::new(1), channel)
+            .await
+            .expect("失敗");
+        db.add_read_channel(GuildId::new(2), channel)
+            .await
+            .expect("失敗");
+
+        db.clear_read_channels(GuildId::new(1)).await.expect("失敗");
+
+        assert!(
+            db.is_read_channel(GuildId::new(2), channel)
+                .await
+                .expect("失敗")
+        );
+    }
+}
