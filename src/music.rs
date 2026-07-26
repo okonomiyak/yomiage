@@ -113,6 +113,43 @@ impl Manager {
             .collect()
     }
 
+    /// 一時停止と再開を切り替える。切り替え後に一時停止中なら true を返す。
+    /// 流れているものが無ければ None。
+    pub async fn toggle_pause(&self, guild_id: GuildId) -> Option<bool> {
+        let call_lock = self.songbird.get(guild_id)?;
+        let queue = {
+            let call = call_lock.lock().await;
+            if call.queue().is_empty() {
+                return None;
+            }
+            call.queue().clone()
+        };
+
+        let paused = is_paused(&queue).await;
+        let result = if paused {
+            queue.resume()
+        } else {
+            queue.pause()
+        };
+        if let Err(error) = result {
+            tracing::warn!(%guild_id, %error, "failed to toggle pause");
+            return None;
+        }
+        Some(!paused)
+    }
+
+    /// 一時停止中かどうか。流れていなければ false。
+    pub async fn is_paused(&self, guild_id: GuildId) -> bool {
+        let Some(call_lock) = self.songbird.get(guild_id) else {
+            return false;
+        };
+        let queue = {
+            let call = call_lock.lock().await;
+            call.queue().clone()
+        };
+        is_paused(&queue).await
+    }
+
     /// 今の曲を飛ばして次へ。飛ばすものがあれば true。
     pub async fn skip(&self, guild_id: GuildId) -> bool {
         let Some(call_lock) = self.songbird.get(guild_id) else {
@@ -161,5 +198,16 @@ impl Manager {
             .iter()
             .filter(|handle| handle.set_volume(volume).is_ok())
             .count()
+    }
+}
+
+/// 再生中トラックの状態を見る。取れないときは「止まっていない」扱いにする。
+async fn is_paused(queue: &songbird::tracks::TrackQueue) -> bool {
+    let Some(current) = queue.current() else {
+        return false;
+    };
+    match current.get_info().await {
+        Ok(state) => state.playing == songbird::tracks::PlayMode::Pause,
+        Err(_) => false,
     }
 }

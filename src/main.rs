@@ -64,6 +64,12 @@ async fn event_handler(
         serenity::FullEvent::VoiceStateUpdate { old, new } => {
             handle_voice_state(ctx, old.as_ref(), new, data).await;
         }
+        serenity::FullEvent::InteractionCreate { interaction } => {
+            // 音楽パネルのボタン。それ以外の interaction は poise が扱う。
+            if let Some(component) = interaction.as_message_component() {
+                commands::dashboard::handle_component(ctx, component, data).await;
+            }
+        }
         _ => {}
     }
     Ok(())

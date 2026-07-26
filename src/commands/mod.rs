@@ -1,4 +1,5 @@
 mod about;
+pub mod dashboard;
 mod dict;
 mod music;
 pub mod settings;
@@ -27,5 +28,6 @@ pub fn all() -> Vec<poise::Command<Data, Error>> {
         music::next(),
         music::stop(),
         music::volume(),
+        dashboard::dashboard(),
     ]
 }
