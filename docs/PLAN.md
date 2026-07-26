@@ -290,7 +290,7 @@ iwaserver の Proxmox 移行に合わせ、**読み上げ Bot 専用の 1 コン
 | --- | --- | --- |
 | 種別 | LXC（Debian 12, unprivileged, `nesting=1`, `keyctl=1`） | Docker を動かすため nesting/keyctl 必須 |
 | vCPU | 3 | ENGINE の `VV_CPU_NUM_THREADS=2` + Bot 用に 1 |
-| RAM | 3 GB | ENGINE 実測 1.5〜2 GB を見込む |
+| RAM | **8 GB**（当初 3 GB） | ENGINE が実測 2.2 GB。そこに Docker 内の Rust ビルドが乗ると 3 GB では足りず、メモリと SWAP を使い切って OOM 寸前になった（2026-07-26）。ビルドを CT 内で行う限りは余裕を持たせる |
 | ディスク | 20 GB | ENGINE イメージがモデル込みで数 GB ある |
 | ネットワーク | 既存ブリッジ + Tailscale（管理用） | Bot は外向き通信のみ、inbound 不要 |
 
