@@ -20,6 +20,12 @@ pub async fn play(
         .guild_id()
         .ok_or_else(|| anyhow!("guild_only コマンドなのに guild_id が取れない"))?;
 
+    if !enabled(ctx, guild_id).await {
+        ctx.say("音楽機能は無効です。`/feature` で有効にできます。")
+            .await?;
+        return Ok(());
+    }
+
     let query = query.trim();
     if query.is_empty() {
         ctx.say("URL か検索語を指定してください。").await?;
@@ -143,4 +149,13 @@ pub async fn volume(
     ctx.say(format!("音量を {percent}% にしました。{note}"))
         .await?;
     Ok(())
+}
+
+/// このサーバーで音楽機能が有効か。設定を読めないときは有効扱いにする。
+pub async fn enabled(ctx: Context<'_>, guild_id: poise::serenity_prelude::GuildId) -> bool {
+    ctx.data()
+        .db
+        .guild_settings(guild_id)
+        .await
+        .is_ok_and(|settings| settings.music_enabled)
 }

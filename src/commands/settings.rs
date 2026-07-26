@@ -149,6 +149,52 @@ pub async fn maxlength(
     Ok(())
 }
 
+/// 切り替えられる機能。
+#[derive(Debug, poise::ChoiceParameter)]
+pub enum Feature {
+    #[name = "読み上げ"]
+    Tts,
+    #[name = "音楽"]
+    Music,
+}
+
+/// 読み上げ／音楽を個別に有効・無効にする（サーバー単位）。
+#[poise::command(slash_command, guild_only)]
+pub async fn feature(
+    ctx: Context<'_>,
+    #[description = "切り替える機能"] feature: Feature,
+    #[description = "有効にするなら true"] enabled: bool,
+) -> Result<(), Error> {
+    let Some(guild_id) = ctx.guild_id() else {
+        ctx.say("サーバー内で実行してください。").await?;
+        return Ok(());
+    };
+    let data = ctx.data();
+
+    let name = match feature {
+        Feature::Tts => {
+            data.db.set_tts_enabled(guild_id, enabled).await?;
+            if !enabled {
+                // 溜まっている読み上げも捨てる。切った直後に喋り続けると驚くので。
+                data.speech.stop(guild_id).await;
+            }
+            "読み上げ"
+        }
+        Feature::Music => {
+            data.db.set_music_enabled(guild_id, enabled).await?;
+            if !enabled {
+                data.music.stop(guild_id).await;
+            }
+            "音楽"
+        }
+    };
+
+    tracing::info!(%guild_id, name, enabled, "feature toggled");
+    let state = if enabled { "有効" } else { "無効" };
+    ctx.say(format!("**{name}**を{state}にしました。")).await?;
+    Ok(())
+}
+
 /// このサーバーの設定と自分の声を表示する。
 #[poise::command(slash_command, guild_only)]
 pub async fn config(ctx: Context<'_>) -> Result<(), Error> {
@@ -185,6 +231,7 @@ pub async fn config(ctx: Context<'_>) -> Result<(), Error> {
 
     ctx.say(format!(
         "**サーバー設定**\n\
+         機能: 読み上げ {} / 音楽 {}\n\
          読み上げ中: {channel_list}\n\
          紐づけ:\n{binding_list}\n\
          文字数上限: {} 文字\n\
@@ -194,6 +241,16 @@ pub async fn config(ctx: Context<'_>) -> Result<(), Error> {
          **あなたの声**（サーバー共通）\n\
          話者: {} (ID {})\n\
          速さ: {} / 高さ: {} / 抑揚: {}",
+        if settings.tts_enabled {
+            "有効"
+        } else {
+            "無効"
+        },
+        if settings.music_enabled {
+            "有効"
+        } else {
+            "無効"
+        },
         settings.max_length,
         if settings.read_bots {
             "読む"

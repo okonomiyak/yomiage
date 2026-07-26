@@ -115,7 +115,14 @@ async fn handle_voice_state(
         return;
     }
 
-    if let Some(name) = display_name(new) {
+    // 読み上げを切っているサーバーではアナウンスもしない。
+    let announce = data
+        .db
+        .guild_settings(guild_id)
+        .await
+        .is_ok_and(|settings| settings.tts_enabled);
+
+    if let Some(name) = display_name(new).filter(|_| announce) {
         let action = if joined { "参加" } else { "退出" };
         let voice = data
             .db
@@ -211,6 +218,9 @@ async fn handle_message(ctx: &serenity::Context, message: &serenity::Message, da
         }
     };
 
+    if !settings.tts_enabled {
+        return;
+    }
     if message.author.bot && !settings.read_bots {
         return;
     }

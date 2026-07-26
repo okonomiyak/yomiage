@@ -20,6 +20,8 @@ pub struct GuildSettings {
     pub ignore_prefix: String,
     /// 音楽の音量（0.0〜1.0）。読み上げに被せるので既定は小さめ。
     pub music_volume: f32,
+    pub tts_enabled: bool,
+    pub music_enabled: bool,
 }
 
 impl Default for GuildSettings {
@@ -29,6 +31,8 @@ impl Default for GuildSettings {
             read_bots: false,
             ignore_prefix: ";".to_owned(),
             music_volume: 0.3,
+            tts_enabled: true,
+            music_enabled: true,
         }
     }
 }
@@ -230,7 +234,7 @@ impl Db {
     /// 行が無ければ既定値を返す。`/join` した時点では行を作らない。
     pub async fn guild_settings(&self, guild_id: GuildId) -> anyhow::Result<GuildSettings> {
         let row = sqlx::query(
-            "SELECT max_length, read_bots, ignore_prefix, music_volume
+            "SELECT max_length, read_bots, ignore_prefix, music_volume, tts_enabled, music_enabled
              FROM guild_settings WHERE guild_id = ?",
         )
         .bind(id(guild_id.get()))
@@ -245,6 +249,8 @@ impl Db {
             read_bots: row.try_get::<i64, _>("read_bots")? != 0,
             ignore_prefix: row.try_get("ignore_prefix")?,
             music_volume: row.try_get::<f64, _>("music_volume")? as f32,
+            tts_enabled: row.try_get::<i64, _>("tts_enabled")? != 0,
+            music_enabled: row.try_get::<i64, _>("music_enabled")? != 0,
         })
     }
 
@@ -259,6 +265,28 @@ impl Db {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// 機能ごとの有効・無効。列名は呼び出し側の固定文字列のみ（外部入力を混ぜない）。
+    async fn set_feature(&self, guild_id: GuildId, column: &str, on: bool) -> anyhow::Result<()> {
+        let sql = format!(
+            "INSERT INTO guild_settings (guild_id, {column}) VALUES (?, ?)
+             ON CONFLICT (guild_id) DO UPDATE SET {column} = excluded.{column}"
+        );
+        sqlx::query(&sql)
+            .bind(id(guild_id.get()))
+            .bind(i64::from(on))
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn set_tts_enabled(&self, guild_id: GuildId, on: bool) -> anyhow::Result<()> {
+        self.set_feature(guild_id, "tts_enabled", on).await
+    }
+
+    pub async fn set_music_enabled(&self, guild_id: GuildId, on: bool) -> anyhow::Result<()> {
+        self.set_feature(guild_id, "music_enabled", on).await
     }
 
     pub async fn set_music_volume(&self, guild_id: GuildId, volume: f32) -> anyhow::Result<()> {
@@ -495,6 +523,28 @@ mod tests {
         // 2 回目は更新になる。
         db.set_max_length(guild, 50).await.expect("失敗");
         assert_eq!(db.guild_settings(guild).await.expect("失敗").max_length, 50);
+    }
+
+    #[tokio::test]
+    async fn feature_switches_default_to_on_and_are_independent() {
+        let db = memory_db().await;
+        let guild = GuildId::new(1);
+
+        let settings = db.guild_settings(guild).await.expect("失敗");
+        assert!(settings.tts_enabled);
+        assert!(settings.music_enabled);
+
+        db.set_tts_enabled(guild, false).await.expect("失敗");
+        let settings = db.guild_settings(guild).await.expect("失敗");
+        assert!(!settings.tts_enabled);
+        // 片方を切ってももう片方は残る。
+        assert!(settings.music_enabled);
+
+        db.set_music_enabled(guild, false).await.expect("失敗");
+        db.set_tts_enabled(guild, true).await.expect("失敗");
+        let settings = db.guild_settings(guild).await.expect("失敗");
+        assert!(settings.tts_enabled);
+        assert!(!settings.music_enabled);
     }
 
     #[tokio::test]

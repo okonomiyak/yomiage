@@ -1,7 +1,7 @@
 mod about;
 pub mod dashboard;
 mod dict;
-mod music;
+pub mod music;
 pub mod settings;
 mod voice;
 
@@ -20,6 +20,7 @@ pub fn all() -> Vec<poise::Command<Data, Error>> {
         settings::pitch(),
         settings::intonation(),
         settings::maxlength(),
+        settings::feature(),
         settings::config(),
         dict::dict(),
         about::about(),

@@ -22,6 +22,12 @@ pub async fn dashboard(ctx: Context<'_>) -> Result<(), Error> {
         .guild_id()
         .ok_or_else(|| anyhow!("guild_only コマンドなのに guild_id が取れない"))?;
 
+    if !super::music::enabled(ctx, guild_id).await {
+        ctx.say("音楽機能は無効です。`/feature` で有効にできます。")
+            .await?;
+        return Ok(());
+    }
+
     let (content, components) = build(ctx.data(), guild_id).await;
     ctx.send(
         poise::CreateReply::default()
