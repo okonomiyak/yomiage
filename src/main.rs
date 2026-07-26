@@ -1,5 +1,6 @@
 mod commands;
 mod db;
+mod exvoice;
 mod music;
 mod speech;
 mod text;
@@ -22,6 +23,8 @@ pub type Context<'a> = poise::Context<'a, Data, Error>;
 
 pub struct Data {
     pub db: Arc<Db>,
+    /// 収録済み音声素材。ディレクトリが無ければ空で、機能が無効になるだけ。
+    pub exvoice: Arc<exvoice::Library>,
     pub speech: Arc<speech::Manager>,
     pub music: Arc<music::Manager>,
     /// `/voice` のオートコンプリート用。起動時に `/speakers` から作る（PLAN §8）。
@@ -201,6 +204,7 @@ async fn speak(data: &Data, guild_id: serenity::GuildId, user_id: serenity::User
             speech::SpeechTask {
                 text,
                 voice,
+                file: None,
                 origin: None,
             },
         )
@@ -311,12 +315,23 @@ async fn handle_message(ctx: &serenity::Context, message: &serenity::Message, da
         }
     };
 
+    // 冥鳴ひまりを選んでいて、発言が収録済み素材と一致するならそれを鳴らす。
+    let file = if voice.style == exvoice::STYLE {
+        data.exvoice.find(&text).map(std::path::Path::to_path_buf)
+    } else {
+        None
+    };
+    if let Some(path) = &file {
+        tracing::debug!(%guild_id, path = %path.display(), "playing exvoice clip");
+    }
+
     data.speech
         .enqueue(
             guild_id,
             SpeechTask {
                 text,
                 voice,
+                file,
                 origin: Some(message.channel_id),
             },
         )
@@ -382,6 +397,21 @@ async fn main() -> anyhow::Result<()> {
     let database_url =
         std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:data/bot.db".to_owned());
 
+    let exvoice_dir = std::env::var("EXVOICE_DIR").unwrap_or_else(|_| "exVOICE".to_owned());
+    let exvoice = Arc::new(exvoice::Library::load(std::path::Path::new(&exvoice_dir)));
+    if exvoice.is_empty() {
+        tracing::info!(
+            dir = exvoice_dir,
+            "exvoice library is empty; 合成のみで動作する"
+        );
+    } else {
+        tracing::info!(
+            dir = exvoice_dir,
+            count = exvoice.len(),
+            "exvoice library loaded"
+        );
+    }
+
     let engine = Arc::new(voicevox::Client::new(&voicevox_url).context("VOICEVOX_URL が不正")?);
     let database = Arc::new(Db::connect(&database_url).await?);
     tracing::info!(url = voicevox_url, database = database_url, "configured");
@@ -424,6 +454,7 @@ async fn main() -> anyhow::Result<()> {
 
                     Ok(Data {
                         db: database,
+                        exvoice,
                         speech: Arc::new(speech::Manager::new(
                             engine,
                             songbird.clone(),

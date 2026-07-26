@@ -10,6 +10,7 @@
 //! 合成の RTF は 0.3〜0.5 なので、一度流れ始めれば再生が合成を追い越すことはない。
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -33,6 +34,8 @@ const PLAYBACK_GRACE: Duration = Duration::from_secs(10);
 pub struct SpeechTask {
     pub text: String,
     pub voice: Voice,
+    /// 合成せずにこの wav をそのまま鳴らす（exVOICE）。
+    pub file: Option<PathBuf>,
     /// 合成に失敗したときの通知先（PLAN §4）。入退室アナウンスなど、
     /// 通知先が無いものは None。
     pub origin: Option<ChannelId>,
@@ -129,7 +132,17 @@ impl Manager {
             // ENGINE が落ちている間、毎回通知すると荒れるので 1 度だけ出す（PLAN §4）。
             let mut reported = false;
             while let Some(task) = text_rx.recv().await {
-                let wav = {
+                // 収録済み素材があるならそれを鳴らす。ENGINE は使わない。
+                let wav = if let Some(path) = &task.file {
+                    match tokio::fs::read(path).await {
+                        Ok(bytes) => bytes,
+                        Err(error) => {
+                            tracing::warn!(%guild_id, %error, path = %path.display(),
+                                "failed to read exvoice file; skipping");
+                            continue;
+                        }
+                    }
+                } else {
                     let Ok(_permit) = engine_limit.acquire().await else {
                         break;
                     };
@@ -186,7 +199,7 @@ async fn play(
         anyhow::bail!("VC に接続していない");
     };
 
-    let expected = Duration::from_secs_f64(wav.len() as f64 / f64::from(voicevox::BYTES_PER_SEC));
+    let expected = expected_duration(&wav);
     let done = Arc::new(Notify::new());
 
     let track = {
@@ -219,6 +232,22 @@ async fn play(
     }
     playing.lock().await.remove(&guild_id);
     Ok(())
+}
+
+/// 再生時間の見積もり。完了イベントを取りこぼしたときの保険にしか使わない。
+/// exVOICE の wav は 48kHz とは限らないので、ヘッダの byteRate から求める。
+fn expected_duration(wav: &[u8]) -> Duration {
+    let rate = if wav.len() >= 32 && &wav[0..4] == b"RIFF" {
+        u32::from_le_bytes([wav[28], wav[29], wav[30], wav[31]])
+    } else {
+        0
+    };
+    let rate = if rate == 0 {
+        voicevox::BYTES_PER_SEC
+    } else {
+        rate
+    };
+    Duration::from_secs_f64(wav.len() as f64 / f64::from(rate))
 }
 
 /// 再生完了を待っている側を起こすだけのイベントハンドラ。

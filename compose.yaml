@@ -30,8 +30,12 @@ services:
       # スラッシュコマンドの登録先。値があるとそのサーバーだけに即時登録される。
       # 空にするとグローバル登録になる（反映に最大 1 時間）。
       - GUILD_ID=${GUILD_ID:-}
+      # 収録済み音声素材の置き場。無ければ空のまま起動し、合成のみで動く。
+      - EXVOICE_DIR=/exvoice
     volumes:
       - ./data:/data
+      # 素材はリポジトリに入れない（配布物）。サーバーに直接置く。
+      - ./exVOICE:/exvoice:ro
     networks: [yomiage]
 
 networks:
