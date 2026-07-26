@@ -8,8 +8,16 @@
 
 set -eu
 
-PVE_HOST="${PVE_HOST:-root@<Proxmox ホスト>}"
-CTID="${CTID:-110}"
+# 接続先は .env（git 管理外）から読む。公開リポジトリに自宅サーバーのアドレスを
+# 置かないため。環境変数で直接渡してもよい。
+if [ -f .env ]; then
+    PVE_HOST="${PVE_HOST:-$(sed -n 's/^PVE_HOST=//p' .env | tr -d '\r')}"
+    CTID="${CTID:-$(sed -n 's/^CTID=//p' .env | tr -d '\r')}"
+    DEST="${DEST:-$(sed -n 's/^DEST=//p' .env | tr -d '\r')}"
+fi
+
+PVE_HOST="${PVE_HOST:?PVE_HOST を .env に設定してください（例: root@10.0.0.1）}"
+CTID="${CTID:?CTID を .env に設定してください（例: 110）}"
 DEST="${DEST:-/opt/yomiage}"
 
 if ! git diff --quiet HEAD 2>/dev/null; then

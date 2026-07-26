@@ -361,7 +361,7 @@ networks:
 # 手元（リポジトリのルート）で
 git commit ...
 sh scripts/deploy.sh          # HEAD を LXC へ送ってビルド・再起動
-ssh root@<Proxmox ホスト> "pct exec 110 -- docker logs -f yomiage-bot"
+ssh "$PVE_HOST" "pct exec $CTID -- docker logs -f yomiage-bot"
 ```
 
 - `deploy.sh` は `git archive HEAD` を送るので、**コミットしていない変更は反映されない**（警告は出る）。
