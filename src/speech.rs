@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use poise::serenity_prelude::{self as serenity, ChannelId, GuildId, async_trait};
 use songbird::input::Input;
+use songbird::tracks::TrackHandle;
 use songbird::{Event, EventContext, EventHandler as VoiceEventHandler, Songbird};
 use tokio::sync::{Mutex, Notify, Semaphore, mpsc};
 
@@ -45,6 +46,14 @@ pub struct Manager {
     /// ENGINE を共有資源として絞る。ギルドが増えても合成が殺到しない。
     engine_limit: Arc<Semaphore>,
     queues: Mutex<HashMap<GuildId, mpsc::Sender<SpeechTask>>>,
+    /// 今どのギルドで何を再生しているか。`/skip` から止めるために持つ。
+    playing: Arc<Mutex<HashMap<GuildId, Playing>>>,
+}
+
+/// 再生中のトラックと、その完了を待っている側を起こすための通知。
+struct Playing {
+    track: TrackHandle,
+    done: Arc<Notify>,
 }
 
 impl Manager {
@@ -59,6 +68,7 @@ impl Manager {
             http,
             engine_limit: Arc::new(Semaphore::new(ENGINE_CONCURRENCY)),
             queues: Mutex::new(HashMap::new()),
+            playing: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -81,6 +91,19 @@ impl Manager {
                 queues.remove(&guild_id);
             }
         }
+    }
+
+    /// 再生中の 1 件を打ち切って次へ進める（`/skip`）。止めるものが無ければ false。
+    pub async fn skip(&self, guild_id: GuildId) -> bool {
+        let Some(playing) = self.playing.lock().await.remove(&guild_id) else {
+            return false;
+        };
+        // stop() だけだと完了イベントが来る保証が無く、待機側が
+        // タイムアウトまで止まってしまう。こちらからも起こす。
+        let _ = playing.track.stop();
+        playing.done.notify_one();
+        tracing::debug!(%guild_id, "playback skipped");
+        true
     }
 
     pub fn songbird(&self) -> &Arc<Songbird> {
@@ -139,9 +162,10 @@ impl Manager {
 
         // 再生タスク。1 件ずつ、再生完了を待ってから次へ。
         let songbird = self.songbird.clone();
+        let playing = self.playing.clone();
         tokio::spawn(async move {
             while let Some(wav) = audio_rx.recv().await {
-                if let Err(error) = play(&songbird, guild_id, wav).await {
+                if let Err(error) = play(&songbird, &playing, guild_id, wav).await {
                     tracing::warn!(%guild_id, %error, "playback failed; skipping");
                 }
             }
@@ -152,7 +176,12 @@ impl Manager {
     }
 }
 
-async fn play(songbird: &Songbird, guild_id: GuildId, wav: Vec<u8>) -> anyhow::Result<()> {
+async fn play(
+    songbird: &Songbird,
+    playing: &Mutex<HashMap<GuildId, Playing>>,
+    guild_id: GuildId,
+    wav: Vec<u8>,
+) -> anyhow::Result<()> {
     let Some(call_lock) = songbird.get(guild_id) else {
         anyhow::bail!("VC に接続していない");
     };
@@ -172,6 +201,14 @@ async fn play(songbird: &Songbird, guild_id: GuildId, wav: Vec<u8>) -> anyhow::R
         track
     };
 
+    playing.lock().await.insert(
+        guild_id,
+        Playing {
+            track: track.clone(),
+            done: done.clone(),
+        },
+    );
+
     // イベントが来ない事故（壊れた wav、ドライバの取りこぼし）でキューが止まらないよう保険をかける。
     if tokio::time::timeout(expected + PLAYBACK_GRACE, done.notified())
         .await
@@ -180,6 +217,7 @@ async fn play(songbird: &Songbird, guild_id: GuildId, wav: Vec<u8>) -> anyhow::R
         tracing::warn!(%guild_id, ?expected, "track did not report completion; stopping it");
         let _ = track.stop();
     }
+    playing.lock().await.remove(&guild_id);
     Ok(())
 }
 

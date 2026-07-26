@@ -106,6 +106,21 @@ pub async fn leave(ctx: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
+/// 今読み上げている 1 件を飛ばす。
+#[poise::command(slash_command, guild_only)]
+pub async fn skip(ctx: Context<'_>) -> Result<(), Error> {
+    let guild_id = ctx
+        .guild_id()
+        .ok_or_else(|| anyhow!("guild_only コマンドなのに guild_id が取れない"))?;
+
+    if ctx.data().speech.skip(guild_id).await {
+        ctx.say("スキップしました。").await?;
+    } else {
+        ctx.say("いま読み上げているものはありません。").await?;
+    }
+    Ok(())
+}
+
 /// テキストチャンネルをボイスチャンネルに紐づける。
 ///
 /// 紐づけておくと、そのテキストチャンネルで `/join` するだけで対象の VC に繋がり、
