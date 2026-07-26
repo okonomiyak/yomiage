@@ -1,5 +1,6 @@
 mod about;
 mod dict;
+mod music;
 pub mod settings;
 mod voice;
 
@@ -21,5 +22,8 @@ pub fn all() -> Vec<poise::Command<Data, Error>> {
         settings::config(),
         dict::dict(),
         about::about(),
+        music::play(),
+        music::stop(),
+        music::volume(),
     ]
 }

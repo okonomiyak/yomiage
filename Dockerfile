@@ -32,5 +32,9 @@ FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+# 音楽再生に使う。PyInstaller ビルドなので python は要らない。
+# YouTube 側の変更で頻繁に壊れるため、あえて固定せず毎回最新を取る。
+# 再生できなくなったらイメージを作り直せば直ることが多い（yomiage rebuild）。
+ADD --chmod=755 https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux /usr/local/bin/yt-dlp
 COPY --from=builder /app/target/release/yomiage-bot /usr/local/bin/yomiage-bot
 ENTRYPOINT ["/usr/local/bin/yomiage-bot"]

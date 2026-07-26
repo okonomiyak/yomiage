@@ -40,11 +40,16 @@ reqwest = { version = "0.12.28", default-features = false, features = [
 serde_json = "1"
 
 # songbird は symphonia を default-features = false で入れており、コーデックを一切有効化しない。
-# wav を再生するにはこちらで wav（RIFF リーダ）と pcm（デコーダ）を有効にする必要がある。
-# 消すと ENGINE の wav が再生できなくなる。
+# ここで有効にしたものだけが再生できる。消すと該当形式が黙って再生できなくなる。
+#   wav / pcm  : VOICEVOX ENGINE が返す wav
+#   mkv        : YouTube の音声のみ形式（webm）。Opus デコーダは songbird が足す
+#   isomp4/aac : YouTube が m4a を返してきたとき用
 symphonia = { version = "0.5.5", default-features = false, features = [
     "wav",
     "pcm",
+    "mkv",
+    "isomp4",
+    "aac",
 ] }
 serde = { version = "1", features = ["derive"] }
 sqlx = { version = "=0.8.6", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros", "derive", "tls-none"] }

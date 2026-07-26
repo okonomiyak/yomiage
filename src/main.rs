@@ -1,5 +1,6 @@
 mod commands;
 mod db;
+mod music;
 mod speech;
 mod text;
 mod voicevox;
@@ -22,6 +23,7 @@ pub type Context<'a> = poise::Context<'a, Data, Error>;
 pub struct Data {
     pub db: Arc<Db>,
     pub speech: Arc<speech::Manager>,
+    pub music: Arc<music::Manager>,
     /// `/voice` のオートコンプリート用。起動時に `/speakers` から作る（PLAN §8）。
     /// ENGINE が落ちていれば空のままにして、コマンド側で検証を諦める。
     pub styles: Vec<StyleChoice>,
@@ -352,7 +354,12 @@ async fn main() -> anyhow::Result<()> {
 
                     Ok(Data {
                         db: database,
-                        speech: Arc::new(speech::Manager::new(engine, songbird, ctx.http.clone())),
+                        speech: Arc::new(speech::Manager::new(
+                            engine,
+                            songbird.clone(),
+                            ctx.http.clone(),
+                        )),
+                        music: Arc::new(music::Manager::new(songbird, reqwest::Client::new())),
                         styles,
                     })
                 })

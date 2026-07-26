@@ -18,6 +18,8 @@ pub struct GuildSettings {
     pub max_length: usize,
     pub read_bots: bool,
     pub ignore_prefix: String,
+    /// 音楽の音量（0.0〜1.0）。読み上げに被せるので既定は小さめ。
+    pub music_volume: f32,
 }
 
 impl Default for GuildSettings {
@@ -26,6 +28,7 @@ impl Default for GuildSettings {
             max_length: 100,
             read_bots: false,
             ignore_prefix: ";".to_owned(),
+            music_volume: 0.3,
         }
     }
 }
@@ -227,7 +230,8 @@ impl Db {
     /// 行が無ければ既定値を返す。`/join` した時点では行を作らない。
     pub async fn guild_settings(&self, guild_id: GuildId) -> anyhow::Result<GuildSettings> {
         let row = sqlx::query(
-            "SELECT max_length, read_bots, ignore_prefix FROM guild_settings WHERE guild_id = ?",
+            "SELECT max_length, read_bots, ignore_prefix, music_volume
+             FROM guild_settings WHERE guild_id = ?",
         )
         .bind(id(guild_id.get()))
         .fetch_optional(&self.pool)
@@ -240,6 +244,7 @@ impl Db {
             max_length: row.try_get::<i64, _>("max_length")?.max(1) as usize,
             read_bots: row.try_get::<i64, _>("read_bots")? != 0,
             ignore_prefix: row.try_get("ignore_prefix")?,
+            music_volume: row.try_get::<f64, _>("music_volume")? as f32,
         })
     }
 
@@ -251,6 +256,18 @@ impl Db {
         )
         .bind(id(guild_id.get()))
         .bind(max_length as i64)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn set_music_volume(&self, guild_id: GuildId, volume: f32) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO guild_settings (guild_id, music_volume) VALUES (?, ?)
+             ON CONFLICT (guild_id) DO UPDATE SET music_volume = excluded.music_volume",
+        )
+        .bind(id(guild_id.get()))
+        .bind(f64::from(volume))
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -478,6 +495,29 @@ mod tests {
         // 2 回目は更新になる。
         db.set_max_length(guild, 50).await.expect("失敗");
         assert_eq!(db.guild_settings(guild).await.expect("失敗").max_length, 50);
+    }
+
+    #[tokio::test]
+    async fn music_volume_round_trips() {
+        let db = memory_db().await;
+        let guild = GuildId::new(1);
+
+        assert_eq!(
+            db.guild_settings(guild).await.expect("失敗").music_volume,
+            0.3
+        );
+
+        db.set_music_volume(guild, 0.75).await.expect("失敗");
+        assert_eq!(
+            db.guild_settings(guild).await.expect("失敗").music_volume,
+            0.75
+        );
+
+        // 音量を変えても他の設定は既定のまま。
+        assert_eq!(
+            db.guild_settings(guild).await.expect("失敗").max_length,
+            100
+        );
     }
 
     #[tokio::test]
