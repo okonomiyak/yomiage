@@ -23,6 +23,8 @@ pub fn all() -> Vec<poise::Command<Data, Error>> {
         dict::dict(),
         about::about(),
         music::play(),
+        music::queue(),
+        music::next(),
         music::stop(),
         music::volume(),
     ]

@@ -19,7 +19,9 @@ serenity = { version = "=0.12.5", default-features = false, features = [
     "utils",
     "voice",
 ] }
-songbird = "=0.6.0"
+# builtin-queue: 音楽のキューを songbird に任せる（自前で持つと再生完了の検知と
+# 状態の同期を自分で書くことになる）。読み上げは play_input で直接鳴らすのでキューに入らない。
+songbird = { version = "=0.6.0", features = ["builtin-queue"] }
 
 anyhow = "1.0.104"
 dotenvy = "0.15.7"
@@ -54,6 +56,7 @@ symphonia = { version = "0.5.5", default-features = false, features = [
 serde = { version = "1", features = ["derive"] }
 sqlx = { version = "=0.8.6", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros", "derive", "tls-none"] }
 regex = "1"
+uuid = "1"
 
 [profile.release]
 lto = "thin"
