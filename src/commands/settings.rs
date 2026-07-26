@@ -22,11 +22,27 @@ async fn autocomplete_style<'a>(
     ctx: Context<'a>,
     partial: &'a str,
 ) -> impl Iterator<Item = serenity::AutocompleteChoice> + 'a {
-    let needle = partial.to_lowercase();
-    ctx.data()
+    let needle = partial.trim().to_lowercase();
+
+    // 日本語入力だと変換確定前の文字列がそのまま飛んでくるので、名前だけだと
+    // 引っかからないことがある。ID でも探せるようにしておく。
+    let mut matched: Vec<&StyleChoice> = ctx
+        .data()
         .styles
         .iter()
-        .filter(move |choice| choice.label.to_lowercase().contains(&needle))
+        .filter(|choice| {
+            needle.is_empty()
+                || choice.label.to_lowercase().contains(&needle)
+                || choice.id.to_string().starts_with(&needle)
+        })
+        .collect();
+
+    // 25 件しか返せないので、前方一致を先に出す。名前を打ち込んだのに
+    // 埋もれて出てこない、という状態を避ける。
+    matched.sort_by_key(|choice| !choice.label.to_lowercase().starts_with(&needle));
+
+    matched
+        .into_iter()
         .take(AUTOCOMPLETE_LIMIT)
         .map(|choice| serenity::AutocompleteChoice::new(choice.label.clone(), choice.id))
 }
