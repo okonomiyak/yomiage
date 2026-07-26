@@ -28,6 +28,9 @@ echo "== 転送 $(git rev-parse --short HEAD) -> $PVE_HOST CT$CTID:$DEST"
 # git archive なので作業ツリーの中途半端な状態は混ざらない。.env や data/ も送らない。
 git archive --format=tar HEAD | ssh "$PVE_HOST" "pct exec $CTID -- tar -x -C $DEST"
 
+# 運用スクリプトは CT 内の /usr/local/bin にも置いておく（中で作業するとき用）。
+ssh "$PVE_HOST" "pct exec $CTID -- install -m 755 $DEST/scripts/yomiage-ctl.sh /usr/local/bin/yomiage"
+
 echo "== ビルドと再起動"
 ssh "$PVE_HOST" "pct exec $CTID -- sh -c 'cd $DEST && docker compose up -d --build yomiage-bot'"
 

@@ -116,12 +116,14 @@ sh scripts/deploy.sh
 
 ### Proxmox での運用
 
-`scripts/yomiage-ctl.sh` を **Proxmox ホスト**に置くと、状態確認・ログ・再起動・バックアップ・スナップショットをまとめて扱える（`pct` を使うので LXC の中ではなくホスト側で動かす）。
+`scripts/yomiage-ctl.sh` で状態確認・ログ・再起動・バックアップ・スナップショットをまとめて扱える。**Proxmox ホストでも LXC の中でも動く**（`pct` があればホスト、無ければコンテナ内と判断する）。スナップショット系だけはホスト専用。
 
 ```sh
 scp scripts/yomiage-ctl.sh root@<PVE>:/usr/local/bin/yomiage
 ssh root@<PVE> chmod +x /usr/local/bin/yomiage
 ```
+
+CT 内のコピーは `deploy.sh` が毎回更新するので、手動で入れ直す必要はない。
 
 ```sh
 yomiage status              # CT・コンテナ・ディスク・直近ログ
