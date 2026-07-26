@@ -353,7 +353,7 @@ async fn main() -> anyhow::Result<()> {
             let songbird = songbird.clone();
             move |ctx, ready, framework| {
                 Box::pin(async move {
-                    register_commands(ctx, framework.options()).await?;
+                    register_commands(ctx, framework.options(), &ready.guilds).await?;
                     tracing::info!(user = %ready.user.name, "logged in");
 
                     let styles = warm_up(&engine).await;
@@ -408,6 +408,7 @@ async fn main() -> anyhow::Result<()> {
 async fn register_commands(
     ctx: &serenity::Context,
     options: &poise::FrameworkOptions<Data, Error>,
+    guilds: &[serenity::UnavailableGuild],
 ) -> anyhow::Result<()> {
     let guild_id = std::env::var("GUILD_ID")
         .ok()
@@ -416,9 +417,19 @@ async fn register_commands(
 
     let Some(guild_id) = guild_id else {
         poise::builtins::register_globally(ctx, &options.commands).await?;
+        // ギルド限定で登録したものが残っていると、そのサーバーだけ一覧に二重で出る。
+        // Bot が居る全ギルドを空で上書きして消す。
+        for guild in guilds {
+            if let Err(error) =
+                poise::builtins::register_in_guild(ctx, &options.commands[..0], guild.id).await
+            {
+                tracing::warn!(guild_id = %guild.id, %error, "failed to clear guild commands");
+            }
+        }
         tracing::info!(
             count = options.commands.len(),
-            "commands registered globally"
+            guilds = guilds.len(),
+            "commands registered globally",
         );
         return Ok(());
     };

@@ -376,6 +376,7 @@ ssh "$PVE_HOST" "pct exec $CTID -- docker logs -f yomiage-bot"
 ### 11.1 フェーズ 2 に入る前の申し送り
 
 - Discord 側は **MESSAGE CONTENT INTENT 有効化済み**（未有効だと close code 4014 で落ちる）。
+- スラッシュコマンドの登録先は `GUILD_ID` で切り替える。値があるとそのサーバーのみ（即時反映・開発用）、空ならグローバル（全サーバー）。**切り替えたときは反対側の登録を消す**こと。残っていると一覧に同じコマンドが二重で出る。グローバルへ戻すときは Bot が居る全ギルドのスコープ登録を空で上書きする。
 - songbird ドライバは `mix_mode: Stereo` / `crypto_mode: Aes256Gcm` で接続する。48kHz ステレオ wav をそのまま流す方針と一致。
 - 依存の `davey`（DAVE 実装）が `[DAVE Binary] Received ...` を tracing ではなく直接標準出力に吐く。ログが汚れるのでフェーズ 5 のログ整理で対処を検討する。
 - 合成レイテンシは §4.1 参照。先読み合成をフェーズ 2 で実装する。
