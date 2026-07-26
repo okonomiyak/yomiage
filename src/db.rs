@@ -243,6 +243,19 @@ impl Db {
         })
     }
 
+    /// 読み上げ文字数の上限を変える。行が無ければ他の列は既定値で作る。
+    pub async fn set_max_length(&self, guild_id: GuildId, max_length: usize) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO guild_settings (guild_id, max_length) VALUES (?, ?)
+             ON CONFLICT (guild_id) DO UPDATE SET max_length = excluded.max_length",
+        )
+        .bind(id(guild_id.get()))
+        .bind(max_length as i64)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     // ---- ユーザーごとの声（§13-2 でギルド横断）----
 
     pub async fn voice(&self, user_id: UserId) -> anyhow::Result<Voice> {
@@ -448,6 +461,32 @@ mod tests {
                 .expect("失敗")
         );
         assert!(db.dictionary(guild).await.expect("失敗").is_empty());
+    }
+
+    #[tokio::test]
+    async fn max_length_is_updated_without_touching_other_settings() {
+        let db = memory_db().await;
+        let guild = GuildId::new(1);
+
+        db.set_max_length(guild, 300).await.expect("失敗");
+        let settings = db.guild_settings(guild).await.expect("失敗");
+        assert_eq!(settings.max_length, 300);
+        // 行を新規作成しても他の列は既定値のまま。
+        assert!(!settings.read_bots);
+        assert_eq!(settings.ignore_prefix, ";");
+
+        // 2 回目は更新になる。
+        db.set_max_length(guild, 50).await.expect("失敗");
+        assert_eq!(db.guild_settings(guild).await.expect("失敗").max_length, 50);
+    }
+
+    #[tokio::test]
+    async fn max_length_is_per_guild() {
+        let db = memory_db().await;
+        db.set_max_length(GuildId::new(1), 300).await.expect("失敗");
+
+        let other = db.guild_settings(GuildId::new(2)).await.expect("失敗");
+        assert_eq!(other.max_length, 100);
     }
 
     #[tokio::test]

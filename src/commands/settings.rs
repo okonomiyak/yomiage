@@ -8,6 +8,9 @@ use crate::{Context, Error};
 /// Discord のオートコンプリートは 25 件まで。
 const AUTOCOMPLETE_LIMIT: usize = 25;
 
+/// 読み上げ文字数の上限に許す範囲。長すぎると 1 発言で数十秒占有してしまう。
+const MAX_LENGTH_RANGE: std::ops::RangeInclusive<u32> = 1..=500;
+
 /// 起動時に `/speakers` から作るオートコンプリート用の候補。
 #[derive(Debug, Clone)]
 pub struct StyleChoice {
@@ -106,6 +109,43 @@ pub async fn intonation(
     }
     ctx.data().db.set_intonation(ctx.author().id, value).await?;
     ctx.say(format!("抑揚を {value} にしました。")).await?;
+    Ok(())
+}
+
+/// 1 メッセージで読み上げる最大文字数（サーバー単位）。
+#[poise::command(slash_command, guild_only)]
+pub async fn maxlength(
+    ctx: Context<'_>,
+    #[description = "1〜500 文字（既定 100）。超えた分は「以下略」になります"]
+    #[min = 1]
+    #[max = 500]
+    value: u32,
+) -> Result<(), Error> {
+    let Some(guild_id) = ctx.guild_id() else {
+        ctx.say("サーバー内で実行してください。").await?;
+        return Ok(());
+    };
+    if !MAX_LENGTH_RANGE.contains(&value) {
+        ctx.say("1 〜 500 の範囲で指定してください。").await?;
+        return Ok(());
+    }
+
+    ctx.data()
+        .db
+        .set_max_length(guild_id, value as usize)
+        .await?;
+
+    tracing::info!(%guild_id, value, "max length changed");
+    // 長くすると合成に時間がかかる（実測で 90 文字 ≒ 4.6 秒 / PLAN §4.1）。
+    let note = if value > 200 {
+        "\n長い設定なので、上限に近い発言は読み始めるまで数秒かかります。"
+    } else {
+        ""
+    };
+    ctx.say(format!(
+        "読み上げの文字数上限を {value} 文字にしました。{note}"
+    ))
+    .await?;
     Ok(())
 }
 

@@ -17,6 +17,7 @@ pub fn all() -> Vec<poise::Command<Data, Error>> {
         settings::speed(),
         settings::pitch(),
         settings::intonation(),
+        settings::maxlength(),
         settings::config(),
         dict::dict(),
         about::about(),
