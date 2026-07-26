@@ -9,6 +9,8 @@ pub fn all() -> Vec<poise::Command<Data, Error>> {
     vec![
         voice::join(),
         voice::leave(),
+        voice::bind(),
+        voice::unbind(),
         settings::voice(),
         settings::speed(),
         settings::pitch(),

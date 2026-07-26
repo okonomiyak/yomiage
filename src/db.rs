@@ -92,6 +92,20 @@ impl Db {
         Ok(())
     }
 
+    /// 1 チャンネルだけ読み上げ対象から外す（`/unbind` 用、PLAN §13-A）。
+    pub async fn remove_read_channel(
+        &self,
+        guild_id: GuildId,
+        channel_id: ChannelId,
+    ) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM read_channels WHERE guild_id = ? AND channel_id = ?")
+            .bind(id(guild_id.get()))
+            .bind(id(channel_id.get()))
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn is_read_channel(
         &self,
         guild_id: GuildId,
@@ -116,6 +130,96 @@ impl Db {
             .into_iter()
             .map(|(channel_id,)| ChannelId::new(channel_id as u64))
             .collect())
+    }
+
+    // ---- テキスト ch と VC の紐づけ ----
+    //
+    // read_channels と違い、これは設定なので起動時に消さない。
+
+    pub async fn bind_channel(
+        &self,
+        guild_id: GuildId,
+        text_channel_id: ChannelId,
+        voice_channel_id: ChannelId,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO channel_bindings (guild_id, text_channel_id, voice_channel_id)
+             VALUES (?, ?, ?)
+             ON CONFLICT (guild_id, text_channel_id)
+             DO UPDATE SET voice_channel_id = excluded.voice_channel_id",
+        )
+        .bind(id(guild_id.get()))
+        .bind(id(text_channel_id.get()))
+        .bind(id(voice_channel_id.get()))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// 消せたら true。無かったら false。
+    pub async fn unbind_channel(
+        &self,
+        guild_id: GuildId,
+        text_channel_id: ChannelId,
+    ) -> anyhow::Result<bool> {
+        let result =
+            sqlx::query("DELETE FROM channel_bindings WHERE guild_id = ? AND text_channel_id = ?")
+                .bind(id(guild_id.get()))
+                .bind(id(text_channel_id.get()))
+                .execute(&self.pool)
+                .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// ギルドの紐づけ一覧（テキスト ch, ボイス ch）。
+    pub async fn bindings(&self, guild_id: GuildId) -> anyhow::Result<Vec<(ChannelId, ChannelId)>> {
+        let rows: Vec<(i64, i64)> = sqlx::query_as(
+            "SELECT text_channel_id, voice_channel_id FROM channel_bindings WHERE guild_id = ?",
+        )
+        .bind(id(guild_id.get()))
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(text, voice)| (ChannelId::new(text as u64), ChannelId::new(voice as u64)))
+            .collect())
+    }
+
+    /// この VC に紐づいたテキスト ch。`/join` したときに読み上げ対象へ入れる。
+    pub async fn bound_text_channels(
+        &self,
+        guild_id: GuildId,
+        voice_channel_id: ChannelId,
+    ) -> anyhow::Result<Vec<ChannelId>> {
+        let rows: Vec<(i64,)> = sqlx::query_as(
+            "SELECT text_channel_id FROM channel_bindings
+             WHERE guild_id = ? AND voice_channel_id = ?",
+        )
+        .bind(id(guild_id.get()))
+        .bind(id(voice_channel_id.get()))
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(text,)| ChannelId::new(text as u64))
+            .collect())
+    }
+
+    /// このテキスト ch に紐づいた VC。`/join` の接続先を決めるのに使う。
+    pub async fn bound_voice_channel(
+        &self,
+        guild_id: GuildId,
+        text_channel_id: ChannelId,
+    ) -> anyhow::Result<Option<ChannelId>> {
+        let row: Option<(i64,)> = sqlx::query_as(
+            "SELECT voice_channel_id FROM channel_bindings
+             WHERE guild_id = ? AND text_channel_id = ?",
+        )
+        .bind(id(guild_id.get()))
+        .bind(id(text_channel_id.get()))
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|(voice,)| ChannelId::new(voice as u64)))
     }
 
     // ---- ギルド設定 ----
@@ -344,6 +448,74 @@ mod tests {
                 .expect("失敗")
         );
         assert!(db.dictionary(guild).await.expect("失敗").is_empty());
+    }
+
+    #[tokio::test]
+    async fn bindings_round_trip() {
+        let db = memory_db().await;
+        let guild = GuildId::new(1);
+        let listen_only = ChannelId::new(10);
+        let another_text = ChannelId::new(11);
+        let voice = ChannelId::new(20);
+
+        db.bind_channel(guild, listen_only, voice)
+            .await
+            .expect("失敗");
+        db.bind_channel(guild, another_text, voice)
+            .await
+            .expect("失敗");
+
+        assert_eq!(
+            db.bound_voice_channel(guild, listen_only)
+                .await
+                .expect("失敗"),
+            Some(voice)
+        );
+        let mut bound = db.bound_text_channels(guild, voice).await.expect("失敗");
+        bound.sort();
+        assert_eq!(bound, vec![listen_only, another_text]);
+
+        // 貼り直すと上書きされる（1 テキスト ch につき VC は 1 つ）。
+        let other_voice = ChannelId::new(21);
+        db.bind_channel(guild, listen_only, other_voice)
+            .await
+            .expect("失敗");
+        assert_eq!(
+            db.bound_voice_channel(guild, listen_only)
+                .await
+                .expect("失敗"),
+            Some(other_voice)
+        );
+        assert_eq!(db.bindings(guild).await.expect("失敗").len(), 2);
+
+        assert!(db.unbind_channel(guild, listen_only).await.expect("失敗"));
+        assert!(!db.unbind_channel(guild, listen_only).await.expect("失敗"));
+        assert_eq!(
+            db.bound_voice_channel(guild, listen_only)
+                .await
+                .expect("失敗"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn bindings_survive_read_channel_reset() {
+        // 起動時の read_channels クリアで紐づけまで消えてはいけない。
+        let db = memory_db().await;
+        let guild = GuildId::new(1);
+        let text = ChannelId::new(10);
+        let voice = ChannelId::new(20);
+
+        db.bind_channel(guild, text, voice).await.expect("失敗");
+        db.add_read_channel(guild, text).await.expect("失敗");
+
+        db.clear_all_read_channels().await.expect("失敗");
+
+        assert!(db.read_channels(guild).await.expect("失敗").is_empty());
+        assert_eq!(
+            db.bound_voice_channel(guild, text).await.expect("失敗"),
+            Some(voice)
+        );
     }
 
     #[tokio::test]

@@ -119,6 +119,7 @@ pub async fn config(ctx: Context<'_>) -> Result<(), Error> {
     let data = ctx.data();
 
     let channels = data.db.read_channels(guild_id).await?;
+    let bindings = data.db.bindings(guild_id).await?;
     let settings = data.db.guild_settings(guild_id).await?;
     let voice = data.db.voice(ctx.author().id).await?;
 
@@ -132,9 +133,20 @@ pub async fn config(ctx: Context<'_>) -> Result<(), Error> {
             .join(" ")
     };
 
+    let binding_list = if bindings.is_empty() {
+        "（なし）".to_owned()
+    } else {
+        bindings
+            .iter()
+            .map(|(text, voice)| format!("<#{text}> → <#{voice}>"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
     ctx.say(format!(
         "**サーバー設定**\n\
-         読み上げ対象: {channel_list}\n\
+         読み上げ中: {channel_list}\n\
+         紐づけ:\n{binding_list}\n\
          文字数上限: {} 文字\n\
          Bot の発言: {}\n\
          無視する接頭辞: `{}`\n\
