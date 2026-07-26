@@ -143,12 +143,34 @@ async fn handle_voice_state(
 
     if left && should_leave(ctx, guild_id, bot_channel, me) {
         tracing::info!(%guild_id, "voice channel is empty; leaving");
+
+        // 通知先は登録を消す前に取っておく。
+        let notify = data
+            .db
+            .read_channels(guild_id)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .next();
+
         if let Err(error) = data.speech.songbird().remove(guild_id).await {
             tracing::warn!(%guild_id, %error, "failed to auto-leave");
         }
         data.speech.stop(guild_id).await;
+        data.music.stop(guild_id).await;
         if let Err(error) = data.db.clear_read_channels(guild_id).await {
             tracing::warn!(%guild_id, %error, "failed to clear read channels on auto-leave");
+        }
+
+        if let Some(channel) = notify
+            && let Err(error) = channel
+                .say(
+                    &ctx.http,
+                    "ボイスチャンネルに誰もいなくなったため退出しました。",
+                )
+                .await
+        {
+            tracing::warn!(%guild_id, %error, "failed to announce auto-leave");
         }
     }
 }
