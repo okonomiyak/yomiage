@@ -5,7 +5,7 @@ mod voicevox;
 
 use std::sync::Arc;
 
-use anyhow::{Context as _, anyhow};
+use anyhow::Context as _;
 use poise::serenity_prelude::{self as serenity};
 use songbird::SerenityInit;
 use tracing_subscriber::EnvFilter;
@@ -134,6 +134,17 @@ async fn main() -> anyhow::Result<()> {
     let database = Arc::new(Db::connect(&database_url).await?);
     tracing::info!(url = voicevox_url, database = database_url, "configured");
 
+    // 再起動直後はどの VC にも接続していない。前回の登録が残っていると
+    // 「VC に居ないのに合成する」状態になるので消す（異常終了の後始末も兼ねる）。
+    match database.clear_all_read_channels().await {
+        Ok(0) => {}
+        Ok(count) => tracing::info!(count, "cleared stale read channels from previous run"),
+        Err(error) => tracing::warn!(%error, "failed to clear stale read channels"),
+    }
+
+    // Songbird を自分で作って登録する。こうしておくと終了処理から触れる。
+    let songbird = songbird::Songbird::serenity();
+
     // MESSAGE_CONTENT は特権インテント。Developer Portal で有効化しないと本文が空で届く（PLAN §12）。
     let intents = serenity::GatewayIntents::GUILDS
         | serenity::GatewayIntents::GUILD_VOICE_STATES
@@ -149,35 +160,77 @@ async fn main() -> anyhow::Result<()> {
             },
             ..Default::default()
         })
-        .setup(move |ctx, ready, framework| {
-            Box::pin(async move {
-                poise::builtins::register_globally(ctx, &framework.options().commands).await?;
-                tracing::info!(user = %ready.user.name, "logged in");
+        .setup({
+            let database = database.clone();
+            let songbird = songbird.clone();
+            move |ctx, ready, framework| {
+                Box::pin(async move {
+                    poise::builtins::register_globally(ctx, &framework.options().commands).await?;
+                    tracing::info!(user = %ready.user.name, "logged in");
 
-                let styles = warm_up(&engine).await;
+                    let styles = warm_up(&engine).await;
 
-                let songbird = songbird::get(ctx)
-                    .await
-                    .ok_or_else(|| anyhow!("songbird が初期化されていない"))?;
-
-                Ok(Data {
-                    db: database,
-                    speech: Arc::new(speech::Manager::new(engine, songbird)),
-                    styles,
+                    Ok(Data {
+                        db: database,
+                        speech: Arc::new(speech::Manager::new(engine, songbird)),
+                        styles,
+                    })
                 })
-            })
+            }
         })
         .build();
 
     let mut client = serenity::ClientBuilder::new(token, intents)
         .framework(framework)
-        .register_songbird()
+        .register_songbird_with(songbird.clone())
         .await
         .context("Discord クライアントの生成に失敗")?;
+
+    // SIGTERM（docker restart / stop）と Ctrl-C で、VC を抜けてから終了する。
+    // 抜けずに落ちると Discord 側にしばらく居座って見える。
+    let shard_manager = client.shard_manager.clone();
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        tracing::info!("shutdown signal received; leaving voice channels");
+
+        let guilds: Vec<_> = songbird.iter().map(|(guild_id, _)| guild_id).collect();
+        for guild_id in guilds {
+            if let Err(error) = songbird.remove(guild_id).await {
+                tracing::warn!(?guild_id, %error, "failed to leave voice channel on shutdown");
+            }
+        }
+
+        shard_manager.shutdown_all().await;
+    });
 
     client.start().await.context("Discord クライアントが停止")?;
 
     Ok(())
+}
+
+/// SIGTERM か Ctrl-C を待つ。SIGTERM は Unix のみ。
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = term.recv() => {},
+                    _ = tokio::signal::ctrl_c() => {},
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "failed to listen for SIGTERM; falling back to Ctrl-C");
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 /// 起動時のヘルスチェック、話者一覧の取得、ウォームアップ（PLAN §7 補足 / §8）。

@@ -75,6 +75,15 @@ impl Db {
         Ok(())
     }
 
+    /// 全ギルドの登録を消す。起動時に呼ぶ：再起動直後はどの VC にも居ないので、
+    /// 登録だけ残っていると「VC に居ないのに合成する」状態になる。
+    pub async fn clear_all_read_channels(&self) -> anyhow::Result<u64> {
+        let result = sqlx::query("DELETE FROM read_channels")
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected())
+    }
+
     pub async fn clear_read_channels(&self, guild_id: GuildId) -> anyhow::Result<()> {
         sqlx::query("DELETE FROM read_channels WHERE guild_id = ?")
             .bind(id(guild_id.get()))
