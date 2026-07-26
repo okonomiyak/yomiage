@@ -1,3 +1,4 @@
+mod about;
 mod dict;
 pub mod settings;
 mod voice;
@@ -17,5 +18,6 @@ pub fn all() -> Vec<poise::Command<Data, Error>> {
         settings::intonation(),
         settings::config(),
         dict::dict(),
+        about::about(),
     ]
 }
