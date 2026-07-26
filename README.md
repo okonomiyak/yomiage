@@ -114,6 +114,32 @@ sh scripts/deploy.sh
 
 `git archive HEAD` を送るので、**コミットしていない変更は反映されない**。
 
+### Proxmox での運用
+
+`scripts/yomiage-ctl.sh` を **Proxmox ホスト**に置くと、状態確認・ログ・再起動・バックアップ・スナップショットをまとめて扱える（`pct` を使うので LXC の中ではなくホスト側で動かす）。
+
+```sh
+scp scripts/yomiage-ctl.sh root@<PVE>:/usr/local/bin/yomiage
+ssh root@<PVE> chmod +x /usr/local/bin/yomiage
+```
+
+```sh
+yomiage status              # CT・コンテナ・ディスク・直近ログ
+yomiage logs -f             # ログを追う
+yomiage restart             # 再起動（VC から抜けてから落ちる）
+yomiage rebuild             # イメージを作り直して差し替え
+yomiage backup              # SQLite を .backup で安全に取得（14 世代保持）
+yomiage snapshot [名前]     # バックアップを取ってから LXC スナップショット
+yomiage rollback <名前>     # スナップショットに戻す（確認あり）
+yomiage prune               # 未使用イメージと古いビルドキャッシュを掃除
+```
+
+SQLite は稼働中にファイルをコピーすると壊れうるので、`backup` は `sqlite3 .backup` を使う（使い捨てコンテナ経由なので CT に sqlite3 を入れる必要はない）。定期実行するなら Proxmox ホストの cron に置く。
+
+```cron
+0 4 * * * /usr/local/bin/yomiage backup >/dev/null 2>&1
+```
+
 ### 構成
 
 ```
@@ -135,3 +161,9 @@ docs/PLAN.md   設計と決定事項
 - **symphonia の `wav` / `pcm` feature が必須**。songbird は symphonia をコーデック無効で依存しているため、外すと合成は成功するのに再生だけ黙って失敗する。
 - ビルドには `cmake` が要る（songbird の Opus が libopus をビルドするため）。Dockerfile では導入済み。
 - 再起動すると VC から抜け、読み上げ対象の登録も破棄される。`/join` からやり直すこと。`/bind` の紐づけと声の設定は残る。
+
+## ライセンス
+
+[MIT](LICENSE)
+
+音声合成部分は VOICEVOX に依存しており、**生成された音声の利用条件はこのライセンスではなく VOICEVOX と各キャラクターの利用規約に従う**。
