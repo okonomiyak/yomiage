@@ -112,21 +112,22 @@ async fn handle_voice_state(
         .await
         .is_ok_and(|settings| settings.tts_enabled);
 
-    // 配信（Go Live）の開始。チャンネルの移動を伴わないので、下の
+    // 配信（Go Live）の開始と終了。チャンネルの移動を伴わないので、下の
     // 「移動していなければ何もしない」判定より先に見る必要がある。
+    // 配信したまま VC を出た場合は after が変わるのでここには来ず、退出だけを読む。
     let was_streaming = old.is_some_and(|state| state.self_stream.unwrap_or(false));
     let is_streaming = new.self_stream.unwrap_or(false);
     if after == Some(bot_channel)
-        && !was_streaming
-        && is_streaming
+        && was_streaming != is_streaming
         && announce
         && let Some(name) = display_name(new)
     {
+        let action = if is_streaming { "開始" } else { "終了" };
         speak(
             data,
             guild_id,
             new.user_id,
-            format!("{name}さんが配信を開始しました"),
+            format!("{name}さんが配信を{action}しました"),
         )
         .await;
     }
