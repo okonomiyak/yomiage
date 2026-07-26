@@ -5194,6 +5194,7 @@ dependencies = [
  "anyhow",
  "dotenvy",
  "poise",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",

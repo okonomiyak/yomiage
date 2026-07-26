@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use poise::serenity_prelude::{GuildId, async_trait};
+use poise::serenity_prelude::{self as serenity, ChannelId, GuildId, async_trait};
 use songbird::input::Input;
 use songbird::{Event, EventContext, EventHandler as VoiceEventHandler, Songbird};
 use tokio::sync::{Mutex, Notify, Semaphore, mpsc};
@@ -32,21 +32,31 @@ const PLAYBACK_GRACE: Duration = Duration::from_secs(10);
 pub struct SpeechTask {
     pub text: String,
     pub voice: Voice,
+    /// 合成に失敗したときの通知先（PLAN §4）。入退室アナウンスなど、
+    /// 通知先が無いものは None。
+    pub origin: Option<ChannelId>,
 }
 
 pub struct Manager {
     engine: Arc<voicevox::Client>,
     songbird: Arc<Songbird>,
+    /// ENGINE 障害を 1 度だけ通知するために使う（PLAN §4）。
+    http: Arc<serenity::Http>,
     /// ENGINE を共有資源として絞る。ギルドが増えても合成が殺到しない。
     engine_limit: Arc<Semaphore>,
     queues: Mutex<HashMap<GuildId, mpsc::Sender<SpeechTask>>>,
 }
 
 impl Manager {
-    pub fn new(engine: Arc<voicevox::Client>, songbird: Arc<Songbird>) -> Self {
+    pub fn new(
+        engine: Arc<voicevox::Client>,
+        songbird: Arc<Songbird>,
+        http: Arc<serenity::Http>,
+    ) -> Self {
         Self {
             engine,
             songbird,
+            http,
             engine_limit: Arc::new(Semaphore::new(ENGINE_CONCURRENCY)),
             queues: Mutex::new(HashMap::new()),
         }
@@ -73,6 +83,10 @@ impl Manager {
         }
     }
 
+    pub fn songbird(&self) -> &Arc<Songbird> {
+        &self.songbird
+    }
+
     /// キューを破棄してタスクを止める（`/leave`）。
     pub async fn stop(&self, guild_id: GuildId) {
         if self.queues.lock().await.remove(&guild_id).is_some() {
@@ -87,16 +101,31 @@ impl Manager {
         // 合成タスク。1 件失敗しても止めず、そのメッセージだけ飛ばす。
         let engine = self.engine.clone();
         let engine_limit = self.engine_limit.clone();
+        let http = self.http.clone();
         tokio::spawn(async move {
+            // ENGINE が落ちている間、毎回通知すると荒れるので 1 度だけ出す（PLAN §4）。
+            let mut reported = false;
             while let Some(task) = text_rx.recv().await {
                 let wav = {
                     let Ok(_permit) = engine_limit.acquire().await else {
                         break;
                     };
                     match engine.synthesize(&task.text, task.voice).await {
-                        Ok(wav) => wav,
+                        Ok(wav) => {
+                            reported = false;
+                            wav
+                        }
                         Err(error) => {
                             tracing::warn!(%guild_id, %error, "synthesis failed; skipping message");
+                            if !reported {
+                                reported = true;
+                                if let Some(channel) = task.origin {
+                                    let notice = "音声合成に失敗しました。VOICEVOX ENGINE が                                                  応答していない可能性があります。                                                  復旧するまでこの通知は出しません。";
+                                    if let Err(error) = channel.say(&http, notice).await {
+                                        tracing::warn!(%guild_id, %error, "failed to report engine outage");
+                                    }
+                                }
+                            }
                             continue;
                         }
                     }

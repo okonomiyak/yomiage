@@ -1,6 +1,7 @@
 mod commands;
 mod db;
 mod speech;
+mod text;
 mod voicevox;
 
 use std::sync::Arc;
@@ -53,15 +54,129 @@ async fn event_handler(
     _framework: poise::FrameworkContext<'_, Data, Error>,
     data: &Data,
 ) -> Result<(), Error> {
-    if let serenity::FullEvent::Message { new_message } = event {
-        // 読み上げの失敗でイベント処理を落とさない。中でログに残して握る。
-        handle_message(ctx, new_message, data).await;
+    // どちらも失敗でイベント処理を落とさない。中でログに残して握る。
+    match event {
+        serenity::FullEvent::Message { new_message } => {
+            handle_message(ctx, new_message, data).await;
+        }
+        serenity::FullEvent::VoiceStateUpdate { old, new } => {
+            handle_voice_state(ctx, old.as_ref(), new, data).await;
+        }
+        _ => {}
     }
     Ok(())
 }
 
-/// メッセージを読み上げキューへ流す（PLAN §7 の 1〜2 と 6）。
-/// テキスト正規化（§7-3）と辞書（§7-4）はフェーズ 4。
+/// 入退室アナウンスと自動退出（PLAN §7.1 / §2 v0.2）。
+async fn handle_voice_state(
+    ctx: &serenity::Context,
+    old: Option<&serenity::VoiceState>,
+    new: &serenity::VoiceState,
+    data: &Data,
+) {
+    let Some(guild_id) = new.guild_id else {
+        return;
+    };
+    let me = ctx.cache.current_user().id;
+    if new.user_id == me {
+        return;
+    }
+
+    // Bot が今どの VC に居るか。居なければ何もしない。
+    let Some(call_lock) = data.speech.songbird().get(guild_id) else {
+        return;
+    };
+    let bot_channel = {
+        let call = call_lock.lock().await;
+        call.current_channel()
+    };
+    let Some(bot_channel) = bot_channel.map(|id| serenity::ChannelId::new(id.0.get())) else {
+        return;
+    };
+
+    let before = old.and_then(|state| state.channel_id);
+    let after = new.channel_id;
+    if before == after {
+        // ミュートやカメラの切り替え。移動ではない。
+        return;
+    }
+
+    let joined = after == Some(bot_channel);
+    let left = before == Some(bot_channel);
+    if !joined && !left {
+        return;
+    }
+
+    if let Some(name) = display_name(new) {
+        let action = if joined { "参加" } else { "退出" };
+        let voice = data
+            .db
+            .voice(new.user_id)
+            .await
+            .unwrap_or_else(|_| voicevox::Voice::default());
+        data.speech
+            .enqueue(
+                guild_id,
+                speech::SpeechTask {
+                    text: format!("{name}が{action}しました"),
+                    voice,
+                    origin: None,
+                },
+            )
+            .await;
+    }
+
+    if left && should_leave(ctx, guild_id, bot_channel, me) {
+        tracing::info!(%guild_id, "voice channel is empty; leaving");
+        if let Err(error) = data.speech.songbird().remove(guild_id).await {
+            tracing::warn!(%guild_id, %error, "failed to auto-leave");
+        }
+        data.speech.stop(guild_id).await;
+        if let Err(error) = data.db.clear_read_channels(guild_id).await {
+            tracing::warn!(%guild_id, %error, "failed to clear read channels on auto-leave");
+        }
+    }
+}
+
+/// 読み上げる名前は サーバーニックネーム > 表示名 > ユーザー名 の順（PLAN §7.1）。
+/// 正規化を通して空になったらアナウンスしない。
+fn display_name(state: &serenity::VoiceState) -> Option<String> {
+    let raw = state
+        .member
+        .as_ref()
+        .and_then(|member| {
+            member
+                .nick
+                .clone()
+                .or_else(|| member.user.global_name.clone())
+                .or_else(|| Some(member.user.name.clone()))
+        })
+        .unwrap_or_default();
+
+    text::normalize(&raw, &text::Options::default())
+}
+
+/// Bot が居る VC に人が残っているか。残っていなければ自動退出する。
+fn should_leave(
+    ctx: &serenity::Context,
+    guild_id: serenity::GuildId,
+    bot_channel: serenity::ChannelId,
+    me: serenity::UserId,
+) -> bool {
+    // キャッシュの参照は Send でないので、この関数の中で完結させる。
+    let Some(guild) = ctx.cache.guild(guild_id) else {
+        return false;
+    };
+    !guild.voice_states.values().any(|state| {
+        state.channel_id == Some(bot_channel)
+            && state.user_id != me
+            // 他の Bot は「人」として数えない。
+            && !state.member.as_ref().is_some_and(|member| member.user.bot)
+    })
+}
+
+/// メッセージを読み上げキューへ流す（PLAN §7）。
+/// フィルタ → 辞書 → 正規化 → キュー投入。
 async fn handle_message(ctx: &serenity::Context, message: &serenity::Message, data: &Data) {
     let Some(guild_id) = message.guild_id else {
         return;
@@ -93,10 +208,28 @@ async fn handle_message(ctx: &serenity::Context, message: &serenity::Message, da
     }
 
     let content = message.content.trim();
-    if content.is_empty() || content.starts_with(&settings.ignore_prefix) {
+    if content.starts_with(&settings.ignore_prefix) {
         return;
     }
-    let text: String = content.chars().take(settings.max_length).collect();
+
+    let dictionary = data.db.dictionary(guild_id).await.unwrap_or_else(|error| {
+        tracing::warn!(%guild_id, %error, "failed to load dictionary");
+        Vec::new()
+    });
+    let names = resolve_names(ctx, message);
+
+    // 正規化して読むものが無くなったら、そのメッセージは飛ばす（PLAN §7-3）。
+    let Some(text) = text::normalize(
+        content,
+        &text::Options {
+            max_length: settings.max_length,
+            names: &names,
+            dictionary: &dictionary,
+            attachments: message.attachments.len(),
+        },
+    ) else {
+        return;
+    };
 
     let voice = match data.db.voice(message.author.id).await {
         Ok(voice) => voice,
@@ -107,8 +240,55 @@ async fn handle_message(ctx: &serenity::Context, message: &serenity::Message, da
     };
 
     data.speech
-        .enqueue(guild_id, SpeechTask { text, voice })
+        .enqueue(
+            guild_id,
+            SpeechTask {
+                text,
+                voice,
+                origin: Some(message.channel_id),
+            },
+        )
         .await;
+}
+
+/// メンションの解決に使う名前をキャッシュから集める（PLAN §7-3）。
+/// キャッシュの参照は Send でないので、この関数の中で全部 String に落とす。
+fn resolve_names(ctx: &serenity::Context, message: &serenity::Message) -> text::Names {
+    let mut names = text::Names::default();
+
+    for user in &message.mentions {
+        names.users.insert(user.id.get(), user.name.clone());
+    }
+
+    let Some(guild_id) = message.guild_id else {
+        return names;
+    };
+    let Some(guild) = ctx.cache.guild(guild_id) else {
+        return names;
+    };
+
+    // サーバーニックネームがあればそちらを優先する。
+    for user in &message.mentions {
+        let name = guild
+            .members
+            .get(&user.id)
+            .and_then(|member| member.nick.clone())
+            .or_else(|| user.global_name.clone())
+            .unwrap_or_else(|| user.name.clone());
+        names.users.insert(user.id.get(), name);
+    }
+    for role_id in &message.mention_roles {
+        if let Some(role) = guild.roles.get(role_id) {
+            names.roles.insert(role_id.get(), role.name.clone());
+        }
+    }
+    for (channel_id, channel) in &guild.channels {
+        names
+            .channels
+            .insert(channel_id.get(), channel.name.clone());
+    }
+
+    names
 }
 
 #[tokio::main]
@@ -172,7 +352,7 @@ async fn main() -> anyhow::Result<()> {
 
                     Ok(Data {
                         db: database,
-                        speech: Arc::new(speech::Manager::new(engine, songbird)),
+                        speech: Arc::new(speech::Manager::new(engine, songbird, ctx.http.clone())),
                         styles,
                     })
                 })

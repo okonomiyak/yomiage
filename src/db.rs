@@ -181,6 +181,50 @@ impl Db {
             .await
     }
 
+    // ---- サーバー辞書（PLAN §7-4）----
+
+    /// 表記 → 読み。ENGINE のユーザー辞書ではなくテキスト置換で実現する（§7-4 の判断）。
+    pub async fn dictionary(&self, guild_id: GuildId) -> anyhow::Result<Vec<(String, String)>> {
+        let rows: Vec<(String, String)> =
+            sqlx::query_as("SELECT surface, reading FROM dictionary WHERE guild_id = ?")
+                .bind(id(guild_id.get()))
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows)
+    }
+
+    pub async fn add_dictionary_entry(
+        &self,
+        guild_id: GuildId,
+        surface: &str,
+        reading: &str,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO dictionary (guild_id, surface, reading) VALUES (?, ?, ?)
+             ON CONFLICT (guild_id, surface) DO UPDATE SET reading = excluded.reading",
+        )
+        .bind(id(guild_id.get()))
+        .bind(surface)
+        .bind(reading)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// 消せたら true。無かったら false。
+    pub async fn remove_dictionary_entry(
+        &self,
+        guild_id: GuildId,
+        surface: &str,
+    ) -> anyhow::Result<bool> {
+        let result = sqlx::query("DELETE FROM dictionary WHERE guild_id = ? AND surface = ?")
+            .bind(id(guild_id.get()))
+            .bind(surface)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     /// 列名は呼び出し側の固定文字列のみ（外部入力を混ぜない）。
     async fn upsert_voice(&self, user_id: UserId, column: &str, value: f64) -> anyhow::Result<()> {
         let sql = format!(
@@ -265,6 +309,56 @@ mod tests {
         db.clear_read_channels(guild).await.expect("失敗");
         assert!(db.read_channels(guild).await.expect("失敗").is_empty());
         assert!(!db.is_read_channel(guild, a).await.expect("失敗"));
+    }
+
+    #[tokio::test]
+    async fn dictionary_entries_round_trip() {
+        let db = memory_db().await;
+        let guild = GuildId::new(1);
+
+        db.add_dictionary_entry(guild, "VOICEVOX", "ボイスボックス")
+            .await
+            .expect("失敗");
+        assert_eq!(
+            db.dictionary(guild).await.expect("失敗"),
+            vec![("VOICEVOX".to_owned(), "ボイスボックス".to_owned())]
+        );
+
+        // 同じ表記を登録し直したら読みが上書きされる（重複行にはならない）。
+        db.add_dictionary_entry(guild, "VOICEVOX", "ボイボ")
+            .await
+            .expect("失敗");
+        assert_eq!(
+            db.dictionary(guild).await.expect("失敗"),
+            vec![("VOICEVOX".to_owned(), "ボイボ".to_owned())]
+        );
+
+        assert!(
+            db.remove_dictionary_entry(guild, "VOICEVOX")
+                .await
+                .expect("失敗")
+        );
+        assert!(
+            !db.remove_dictionary_entry(guild, "VOICEVOX")
+                .await
+                .expect("失敗")
+        );
+        assert!(db.dictionary(guild).await.expect("失敗").is_empty());
+    }
+
+    #[tokio::test]
+    async fn dictionaries_are_per_guild() {
+        let db = memory_db().await;
+        db.add_dictionary_entry(GuildId::new(1), "あ", "ア")
+            .await
+            .expect("失敗");
+
+        assert!(
+            db.dictionary(GuildId::new(2))
+                .await
+                .expect("失敗")
+                .is_empty()
+        );
     }
 
     #[tokio::test]
