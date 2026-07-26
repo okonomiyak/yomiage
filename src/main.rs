@@ -104,8 +104,35 @@ async fn handle_voice_state(
 
     let before = old.and_then(|state| state.channel_id);
     let after = new.channel_id;
+
+    // 読み上げを切っているサーバーではアナウンスもしない。
+    let announce = data
+        .db
+        .guild_settings(guild_id)
+        .await
+        .is_ok_and(|settings| settings.tts_enabled);
+
+    // 配信（Go Live）の開始。チャンネルの移動を伴わないので、下の
+    // 「移動していなければ何もしない」判定より先に見る必要がある。
+    let was_streaming = old.is_some_and(|state| state.self_stream.unwrap_or(false));
+    let is_streaming = new.self_stream.unwrap_or(false);
+    if after == Some(bot_channel)
+        && !was_streaming
+        && is_streaming
+        && announce
+        && let Some(name) = display_name(new)
+    {
+        speak(
+            data,
+            guild_id,
+            new.user_id,
+            format!("{name}さんが配信を開始しました"),
+        )
+        .await;
+    }
+
     if before == after {
-        // ミュートやカメラの切り替え。移動ではない。
+        // ミュートやカメラ、配信の切り替え。移動ではないのでここで終わり。
         return;
     }
 
@@ -115,30 +142,15 @@ async fn handle_voice_state(
         return;
     }
 
-    // 読み上げを切っているサーバーではアナウンスもしない。
-    let announce = data
-        .db
-        .guild_settings(guild_id)
-        .await
-        .is_ok_and(|settings| settings.tts_enabled);
-
     if let Some(name) = display_name(new).filter(|_| announce) {
         let action = if joined { "参加" } else { "退出" };
-        let voice = data
-            .db
-            .voice(new.user_id)
-            .await
-            .unwrap_or_else(|_| voicevox::Voice::default());
-        data.speech
-            .enqueue(
-                guild_id,
-                speech::SpeechTask {
-                    text: format!("{name}が{action}しました"),
-                    voice,
-                    origin: None,
-                },
-            )
-            .await;
+        speak(
+            data,
+            guild_id,
+            new.user_id,
+            format!("{name}が{action}しました"),
+        )
+        .await;
     }
 
     if left && should_leave(ctx, guild_id, bot_channel, me) {
@@ -173,6 +185,25 @@ async fn handle_voice_state(
             tracing::warn!(%guild_id, %error, "failed to announce auto-leave");
         }
     }
+}
+
+/// アナウンスを対象ユーザーの設定話者で読み上げる（PLAN §7.1）。
+async fn speak(data: &Data, guild_id: serenity::GuildId, user_id: serenity::UserId, text: String) {
+    let voice = data
+        .db
+        .voice(user_id)
+        .await
+        .unwrap_or_else(|_| voicevox::Voice::default());
+    data.speech
+        .enqueue(
+            guild_id,
+            speech::SpeechTask {
+                text,
+                voice,
+                origin: None,
+            },
+        )
+        .await;
 }
 
 /// 読み上げる名前は サーバーニックネーム > 表示名 > ユーザー名 の順（PLAN §7.1）。
