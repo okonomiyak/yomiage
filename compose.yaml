@@ -27,6 +27,9 @@ services:
       - VOICEVOX_URL=http://voicevox:50021
       - DATABASE_URL=sqlite:/data/bot.db
       - RUST_LOG=${RUST_LOG:-info,yomiage_bot=debug}
+      # スラッシュコマンドの登録先。値があるとそのサーバーだけに即時登録される。
+      # 空にするとグローバル登録になる（反映に最大 1 時間）。
+      - GUILD_ID=${GUILD_ID:-1441420355963981976}
     volumes:
       - ./data:/data
     networks: [yomiage]

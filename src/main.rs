@@ -345,7 +345,7 @@ async fn main() -> anyhow::Result<()> {
             let songbird = songbird.clone();
             move |ctx, ready, framework| {
                 Box::pin(async move {
-                    poise::builtins::register_globally(ctx, &framework.options().commands).await?;
+                    register_commands(ctx, framework.options()).await?;
                     tracing::info!(user = %ready.user.name, "logged in");
 
                     let styles = warm_up(&engine).await;
@@ -385,6 +385,39 @@ async fn main() -> anyhow::Result<()> {
 
     client.start().await.context("Discord クライアントが停止")?;
 
+    Ok(())
+}
+
+/// スラッシュコマンドを登録する。
+///
+/// `GUILD_ID` があればそのサーバーだけに登録する。ギルド登録は**即時反映**なので開発中はこちら。
+/// 空ならグローバル登録で、こちらは反映に最大 1 時間かかる。
+async fn register_commands(
+    ctx: &serenity::Context,
+    options: &poise::FrameworkOptions<Data, Error>,
+) -> anyhow::Result<()> {
+    let guild_id = std::env::var("GUILD_ID")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .map(serenity::GuildId::new);
+
+    let Some(guild_id) = guild_id else {
+        poise::builtins::register_globally(ctx, &options.commands).await?;
+        tracing::info!(
+            count = options.commands.len(),
+            "commands registered globally"
+        );
+        return Ok(());
+    };
+
+    poise::builtins::register_in_guild(ctx, &options.commands, guild_id).await?;
+    // 以前グローバルに登録したものが残っていると一覧に二重で出る。空で上書きして消す。
+    poise::builtins::register_globally(ctx, &options.commands[..0]).await?;
+    tracing::info!(
+        %guild_id,
+        count = options.commands.len(),
+        "commands registered for a single guild (instant)",
+    );
     Ok(())
 }
 
