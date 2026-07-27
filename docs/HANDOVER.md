@@ -63,7 +63,7 @@ Discord のテキストチャンネルの発言を VOICEVOX で読み上げる B
 ## 3. 開発と反映
 
 ```sh
-cargo test                  # 単体テスト 50 本（ENGINE 不要）
+cargo test                  # 単体テスト 57 本（ENGINE 不要）
 cargo test -- --ignored     # 疎通テスト 6 本（ENGINE 5 本 / ニコニコ 1 本は要ネットワーク）
 cargo clippy -- -D warnings
 cargo fmt

@@ -42,18 +42,51 @@ struct TrackInfo {
     title: String,
     /// yt-dlp が返した曲の長さ。ライブ配信などでは取れない。
     duration: Option<Duration>,
+    /// 元のページ（`webpage_url`）。検索で入れた曲でも実際に選ばれた動画の URL が入る。
+    url: Option<String>,
+}
+
+impl TrackInfo {
+    fn as_queued(&self) -> QueuedTrack {
+        QueuedTrack {
+            title: self.title.clone(),
+            url: self.url.clone(),
+        }
+    }
+
+    /// 表に無いトラック（`/play` を経ずに積まれた、情報を取りこぼした等）。
+    fn unknown_track() -> QueuedTrack {
+        QueuedTrack {
+            title: UNKNOWN_TITLE.to_owned(),
+            url: None,
+        }
+    }
+}
+
+/// 一覧に出す 1 曲。
+#[derive(Clone)]
+pub struct QueuedTrack {
+    pub title: String,
+    pub url: Option<String>,
+}
+
+impl QueuedTrack {
+    /// 曲名を押すと元のページへ飛べる形にする。
+    pub fn link(&self) -> String {
+        track_link(&self.title, self.url.as_deref())
+    }
 }
 
 /// キューに積んだ結果。
 pub struct Queued {
-    pub title: String,
+    pub track: QueuedTrack,
     /// キューの何番目か。1 なら即再生。
     pub position: usize,
 }
 
 /// 今流れている曲の状態。パネルの描画に要るものだけ。
 pub struct NowPlaying {
-    pub title: String,
+    pub track: QueuedTrack,
     pub position: Duration,
     /// 取れないことがある（ライブ配信など）。その場合はバーを出さない。
     pub duration: Option<Duration>,
@@ -81,21 +114,28 @@ impl Manager {
             .get(guild_id)
             .context("ボイスチャンネルに接続していない")?;
 
+        let is_url = query.starts_with("http://") || query.starts_with("https://");
+
         // ニコニコだけは yt-dlp に直接ダウンロードさせる。songbird に URL を渡すと
         // Cookie が足りず 403 になるため（理由は nicovideo モジュールの説明を参照）。
-        let (input, title, duration) = if nicovideo::is_nicovideo(query) {
+        let (input, mut info) = if nicovideo::is_nicovideo(query) {
             let mut source = nicovideo::NicoVideo::new(query.to_owned());
-            let (title, duration) = describe(&mut source, guild_id, query).await;
-            (Input::Lazy(Box::new(source)), title, duration)
+            let info = describe(&mut source, guild_id, query).await;
+            (Input::Lazy(Box::new(source)), info)
         } else {
-            let mut source = if query.starts_with("http://") || query.starts_with("https://") {
+            let mut source = if is_url {
                 YoutubeDl::new(self.http.clone(), query.to_owned())
             } else {
                 YoutubeDl::new_search(self.http.clone(), query.to_owned())
             };
-            let (title, duration) = describe(&mut source, guild_id, query).await;
-            (Input::from(source), title, duration)
+            let info = describe(&mut source, guild_id, query).await;
+            (Input::from(source), info)
         };
+
+        // メタデータを引けなくても、URL 指定なら少なくともリンクは張れる。
+        if info.url.is_none() && is_url {
+            info.url = Some(query.to_owned());
+        }
 
         let (handle, position) = {
             let mut call = call_lock.lock().await;
@@ -106,26 +146,21 @@ impl Manager {
         if let Err(error) = handle.set_volume(volume) {
             tracing::warn!(%guild_id, %error, "failed to apply volume");
         }
-        self.tracks.lock().await.insert(
-            handle.uuid(),
-            TrackInfo {
-                title: title.clone(),
-                duration,
-            },
-        );
-
         tracing::info!(
             %guild_id,
             position,
-            title = title.as_str(),
-            duration_secs = duration.map(|value| value.as_secs()),
+            title = info.title.as_str(),
+            duration_secs = info.duration.map(|value| value.as_secs()),
             "music queued",
         );
-        Ok(Queued { title, position })
+
+        let track = info.as_queued();
+        self.tracks.lock().await.insert(handle.uuid(), info);
+        Ok(Queued { track, position })
     }
 
-    /// (再生中, 待機中) のタイトル一覧。
-    pub async fn queue(&self, guild_id: GuildId) -> Vec<String> {
+    /// (再生中, 待機中) の一覧。
+    pub async fn queue(&self, guild_id: GuildId) -> Vec<QueuedTrack> {
         let Some(call_lock) = self.songbird.get(guild_id) else {
             return Vec::new();
         };
@@ -143,7 +178,7 @@ impl Manager {
             .map(|handle| {
                 known
                     .get(&handle.uuid())
-                    .map_or_else(|| UNKNOWN_TITLE.to_owned(), |info| info.title.clone())
+                    .map_or_else(TrackInfo::unknown_track, TrackInfo::as_queued)
             })
             .collect()
     }
@@ -162,7 +197,7 @@ impl Manager {
         let known = self.tracks.lock().await;
         let info = known.get(&current.uuid());
         Some(NowPlaying {
-            title: info.map_or_else(|| UNKNOWN_TITLE.to_owned(), |info| info.title.clone()),
+            track: info.map_or_else(TrackInfo::unknown_track, TrackInfo::as_queued),
             position: state.position,
             duration: info.and_then(|info| info.duration),
             paused: state.playing == songbird::tracks::PlayMode::Pause,
@@ -299,19 +334,22 @@ impl Manager {
 ///
 /// ここで取った長さをそのまま持っておく。あとで進捗バーを描くたびに
 /// yt-dlp を叩き直さずに済ませたいため。
-async fn describe(
-    source: &mut dyn Compose,
-    guild_id: GuildId,
-    fallback: &str,
-) -> (String, Option<Duration>) {
+async fn describe(source: &mut dyn Compose, guild_id: GuildId, fallback: &str) -> TrackInfo {
     match source.aux_metadata().await {
-        Ok(metadata) => (
-            metadata.title.unwrap_or_else(|| fallback.to_owned()),
-            metadata.duration,
-        ),
+        Ok(metadata) => TrackInfo {
+            title: metadata.title.unwrap_or_else(|| fallback.to_owned()),
+            duration: metadata.duration,
+            // `source_url` は yt-dlp の `webpage_url`。検索で入れた曲でも、
+            // 実際に選ばれた動画のページが入る。
+            url: metadata.source_url,
+        },
         Err(error) => {
             tracing::debug!(%guild_id, %error, "failed to fetch metadata");
-            (fallback.to_owned(), None)
+            TrackInfo {
+                title: fallback.to_owned(),
+                duration: None,
+                url: None,
+            }
         }
     }
 }
@@ -325,6 +363,42 @@ async fn is_paused(queue: &songbird::tracks::TrackQueue) -> bool {
         Ok(state) => state.playing == songbird::tracks::PlayMode::Pause,
         Err(_) => false,
     }
+}
+
+/// 曲名を押すと元のページへ飛べる形にする。URL が無ければ曲名だけを返す。
+///
+/// 曲名は他人が付けたものなので `[` `]` や `*` が入りうる。素で埋めると
+/// リンクが壊れたり、意図しない太字・打ち消し線になったりする。必ずエスケープする。
+pub fn track_link(title: &str, url: Option<&str>) -> String {
+    let label = escape_markdown(title);
+    match url.filter(|url| is_safe_link(url)) {
+        Some(url) => format!("[{label}]({url})"),
+        None => label,
+    }
+}
+
+/// Discord の書式指定に使われる文字を打ち消す。
+fn escape_markdown(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for character in text.chars() {
+        if matches!(
+            character,
+            '\\' | '*' | '_' | '~' | '`' | '|' | '[' | ']' | '<' | '>'
+        ) {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+    }
+    escaped
+}
+
+/// `(...)` を壊さずに埋められる URL か。
+///
+/// 壊すものは**エスケープせずにリンクをやめる**。中途半端に組み立てて
+/// 崩れた表示になるより、曲名だけ出すほうがましなため。
+fn is_safe_link(url: &str) -> bool {
+    (url.starts_with("https://") || url.starts_with("http://"))
+        && !url.contains(['(', ')', ' ', '\n', '\t', '<', '>'])
 }
 
 /// 進捗バーの目盛りの数。スマホの幅で折り返さない程度に抑えている。
@@ -375,6 +449,62 @@ mod tests {
             .chars()
             .take_while(|c| *c == '▬' || *c == '◉')
             .collect()
+    }
+
+    #[test]
+    fn title_links_to_its_page() {
+        assert_eq!(
+            track_link("曲名", Some("https://youtu.be/abc")),
+            "[曲名](https://youtu.be/abc)"
+        );
+    }
+
+    /// URL が取れなかった曲は曲名だけ出す。
+    #[test]
+    fn title_without_a_url_stays_plain() {
+        assert_eq!(track_link("曲名", None), "曲名");
+    }
+
+    /// 角括弧入りの曲名でリンクが壊れないこと。ここが本題。
+    #[test]
+    fn brackets_in_the_title_are_escaped() {
+        assert_eq!(
+            track_link("[MV] 曲名", Some("https://youtu.be/abc")),
+            "[\\[MV\\] 曲名](https://youtu.be/abc)"
+        );
+    }
+
+    /// 曲名に含まれる記号で勝手に書式が付かないこと。
+    #[test]
+    fn markdown_in_the_title_is_escaped() {
+        assert_eq!(
+            track_link("*強調* _した_ `名前`", None),
+            "\\*強調\\* \\_した\\_ \\`名前\\`"
+        );
+        assert_eq!(track_link("~~消し~~", None), "\\~\\~消し\\~\\~");
+        assert_eq!(track_link("a|b", None), "a\\|b");
+        assert_eq!(track_link("back\\slash", None), "back\\\\slash");
+    }
+
+    /// `<...>` を素通しすると、`<@123>` のような曲名がメンションとして解釈される。
+    #[test]
+    fn angle_brackets_in_the_title_are_escaped() {
+        assert_eq!(track_link("<@123>", None), "\\<@123\\>");
+    }
+
+    /// 括弧を含む URL はリンクを壊すので、リンクにしない。
+    #[test]
+    fn urls_that_would_break_the_link_are_dropped() {
+        assert_eq!(track_link("曲名", Some("https://e.com/a(b)c")), "曲名");
+        assert_eq!(track_link("曲名", Some("https://e.com/a b")), "曲名");
+    }
+
+    /// http(s) 以外はリンクにしない。
+    #[test]
+    fn non_http_urls_are_not_linked() {
+        assert_eq!(track_link("曲名", Some("javascript:alert(1)")), "曲名");
+        assert_eq!(track_link("曲名", Some("ftp://e.com/a")), "曲名");
+        assert_eq!(track_link("曲名", Some("")), "曲名");
     }
 
     #[test]

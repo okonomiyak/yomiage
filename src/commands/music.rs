@@ -45,12 +45,13 @@ pub async fn play(
     match ctx.data().music.enqueue(guild_id, query, volume).await {
         Ok(queued) => {
             let percent = (volume * 100.0).round() as u32;
+            let link = queued.track.link();
             let message = if queued.position <= 1 {
-                format!("再生します: **{}**（音量 {percent}%）", queued.title)
+                format!("再生します: **{link}**（音量 {percent}%）")
             } else {
                 format!(
-                    "キューに追加しました（{} 番目）: **{}**",
-                    queued.position, queued.title
+                    "キューに追加しました（{} 番目）: **{link}**",
+                    queued.position
                 )
             };
             ctx.say(message).await?;
@@ -70,20 +71,20 @@ pub async fn queue(ctx: Context<'_>) -> Result<(), Error> {
         .guild_id()
         .ok_or_else(|| anyhow!("guild_only コマンドなのに guild_id が取れない"))?;
 
-    let titles = ctx.data().music.queue(guild_id).await;
-    let Some((current, waiting)) = titles.split_first() else {
+    let tracks = ctx.data().music.queue(guild_id).await;
+    let Some((current, waiting)) = tracks.split_first() else {
         ctx.say("キューは空です。").await?;
         return Ok(());
     };
 
-    let mut body = format!("▶ **{current}**（再生中）");
+    let mut body = format!("▶ **{}**（再生中）", current.link());
     // 位置が取れないとき（曲の入れ替わりの瞬間など）はバーを省く。
     if let Some(now) = ctx.data().music.now_playing(guild_id).await {
         body.push('\n');
         body.push_str(&crate::music::progress_bar(now.position, now.duration));
     }
-    for (index, title) in waiting.iter().take(QUEUE_LIMIT).enumerate() {
-        body.push_str(&format!("\n{}. {title}", index + 2));
+    for (index, track) in waiting.iter().take(QUEUE_LIMIT).enumerate() {
+        body.push_str(&format!("\n{}. {}", index + 2, track.link()));
     }
     if waiting.len() > QUEUE_LIMIT {
         body.push_str(&format!("\n…ほか {} 件", waiting.len() - QUEUE_LIMIT));

@@ -267,7 +267,7 @@ struct View {
 /// 今の状態から本文とボタンを作る。押されるたび・5 秒ごとに作り直す。
 async fn render(panel: &PanelCtx, guild_id: serenity::GuildId) -> View {
     let now = panel.music.now_playing(guild_id).await;
-    let titles = panel.music.queue(guild_id).await;
+    let tracks = panel.music.queue(guild_id).await;
     let volume = panel
         .db
         .guild_settings(guild_id)
@@ -286,13 +286,13 @@ async fn render(panel: &PanelCtx, guild_id: serenity::GuildId) -> View {
             };
             let mut body = format!(
                 "**音楽コントロール**（音量 {percent}%）\n{state}: **{}**\n{}",
-                now.title,
+                now.track.link(),
                 music::progress_bar(now.position, now.duration),
             );
             // 先頭は再生中の曲なので、待機分だけ並べる。
-            let waiting = titles.len().saturating_sub(1);
-            for (index, title) in titles.iter().skip(1).take(QUEUE_PREVIEW).enumerate() {
-                body.push_str(&format!("\n{}. {title}", index + 2));
+            let waiting = tracks.len().saturating_sub(1);
+            for (index, track) in tracks.iter().skip(1).take(QUEUE_PREVIEW).enumerate() {
+                body.push_str(&format!("\n{}. {}", index + 2, track.link()));
             }
             if waiting > QUEUE_PREVIEW {
                 body.push_str(&format!("\n…ほか {} 件", waiting - QUEUE_PREVIEW));

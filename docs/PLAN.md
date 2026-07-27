@@ -237,6 +237,7 @@ enqueue ─▶ [text queue: 20] ─▶ 合成タスク ─▶ [audio queue: 1] �
 - 再生位置は `TrackHandle::get_info()` の `TrackState.position`。曲の長さは `/play` 時の `aux_metadata().duration` を自前の表に持つ（`music::TrackInfo`）。
 - **シークの実体**は `TrackHandle::seek_async()`。ただし YouTube 音源は `HttpStream::is_seekable()` が `false` なので、**前方シークは効くが後方シークは songbird が `Compose`（yt-dlp）から取り直す**。数秒かかるため、ボタンのハンドラは先に `CreateInteractionResponse::Acknowledge`（DEFERRED_UPDATE_MESSAGE）を返してから動かし、終わってからメッセージを編集する。3 秒以内に ack しないと Discord が失敗表示にする。
 - 終端ちょうどへ飛ばすとシーク直後に曲が終わるので、長さが分かっているときは 3 秒手前で止める（`SEEK_TAIL_MARGIN`）。
+- **曲名は `[曲名](URL)` のリンクにする**（`music::track_link`）。URL は `AuxMetadata.source_url`（yt-dlp の `webpage_url`）から取るので、検索語で入れた曲でも実際に選ばれた動画へ飛べる。曲名は他人が付けたものなので `[` `*` `<` などを必ずエスケープする。エスケープを忘れるとリンクが壊れ、`<@123>` のような曲名はメンションとして解釈される。括弧を含む URL は**リンクにせず曲名だけ出す**（中途半端に組み立てて崩れるより良いため）。
 
 ### 補足
 
