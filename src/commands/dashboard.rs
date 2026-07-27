@@ -27,10 +27,15 @@ const PREFIX: &str = "music:";
 /// 一覧に出す待機曲の数。パネルなので短めにする。
 const QUEUE_PREVIEW: usize = 5;
 
-/// ⏪ ⏩ で動かす幅（秒）。
-/// 後方シークは 1 回ごとに yt-dlp からの取り直しになるので、連打すると
-/// そのぶん待たされる（`music::seek_relative`）。
-const SEEK_STEP_SECS: i64 = 10;
+/// ⏪ ⏩ で動かす幅（秒）。小さいものから並べる。
+///
+/// 後方シークは 1 回ごとに yt-dlp からの取り直しになる（`music::seek_relative`）。
+/// 大きい幅を用意しておくと、小さいほうを連打するより取り直しの回数が減る。
+const SEEK_STEPS: [i64; 2] = [10, 60];
+
+/// 受け付けるシーク幅の上限（秒）。`custom_id` は外から作れるので、
+/// 桁の大きい値が飛んできても素通ししない。
+const MAX_SEEK_SECS: i64 = 3600;
 
 /// バーを描き替える間隔。15 目盛りなので、4 分の曲なら 1 目盛り 16 秒。
 /// これより短くしても見た目は変わらず、編集リクエストが増えるだけ。
@@ -185,11 +190,10 @@ pub async fn handle_component(
 
     // シークは後方だと yt-dlp から取り直しになり 3 秒を超える（music::seek_relative）。
     // 先に ack だけ返さないと Discord が「失敗しました」を出す。
-    let seek = match action {
-        "back" => Some(-SEEK_STEP_SECS),
-        "forward" => Some(SEEK_STEP_SECS),
-        _ => None,
-    };
+    let seek = action
+        .strip_prefix("seek:")
+        .and_then(|delta| delta.parse::<i64>().ok())
+        .filter(|delta| delta.unsigned_abs() <= MAX_SEEK_SECS.unsigned_abs());
 
     if let Some(delta) = seek {
         let ack = serenity::CreateInteractionResponse::Acknowledge;
@@ -256,6 +260,15 @@ pub async fn handle_component(
         .await;
 }
 
+/// シークのボタン 1 個。動かす幅を `custom_id` に持たせるので、
+/// 幅を足したいときは `SEEK_STEPS` に足すだけで済む。
+fn seek_button(delta_secs: i64, icon: char) -> serenity::CreateButton {
+    serenity::CreateButton::new(format!("{PREFIX}seek:{delta_secs}"))
+        .emoji(icon)
+        .label(format!("{}秒", delta_secs.abs()))
+        .style(serenity::ButtonStyle::Secondary)
+}
+
 /// 描き替えの 1 コマ。
 struct View {
     content: String,
@@ -301,21 +314,22 @@ async fn render(panel: &PanelCtx, guild_id: serenity::GuildId) -> View {
         }
     };
 
-    // 1 行 5 個まで置けるが、絵文字付きだとスマホで詰まる。役割で 2 行に分ける。
-    let seeking = serenity::CreateActionRow::Buttons(vec![
-        serenity::CreateButton::new(format!("{PREFIX}back"))
-            .emoji('⏪')
-            .label(format!("{SEEK_STEP_SECS}秒"))
-            .style(serenity::ButtonStyle::Secondary),
+    // 1 行 5 個までなので、再生位置まわりを 1 行に収めて一時停止を中央に置く。
+    // 巻き戻しは大きいほうを左端にして、左へ行くほど大きく戻る並びにする。
+    let mut seeking = Vec::with_capacity(SEEK_STEPS.len() * 2 + 1);
+    for step in SEEK_STEPS.iter().rev() {
+        seeking.push(seek_button(-step, '⏪'));
+    }
+    seeking.push(
         serenity::CreateButton::new(format!("{PREFIX}toggle"))
             .emoji(if paused { '▶' } else { '⏸' })
             .label(if paused { "再開" } else { "一時停止" })
             .style(serenity::ButtonStyle::Primary),
-        serenity::CreateButton::new(format!("{PREFIX}forward"))
-            .emoji('⏩')
-            .label(format!("{SEEK_STEP_SECS}秒"))
-            .style(serenity::ButtonStyle::Secondary),
-    ]);
+    );
+    for step in SEEK_STEPS {
+        seeking.push(seek_button(step, '⏩'));
+    }
+    let seeking = serenity::CreateActionRow::Buttons(seeking);
     let queueing = serenity::CreateActionRow::Buttons(vec![
         serenity::CreateButton::new(format!("{PREFIX}next"))
             .emoji('⏭')
