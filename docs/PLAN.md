@@ -238,7 +238,7 @@ enqueue ─▶ [text queue: 20] ─▶ 合成タスク ─▶ [audio queue: 1] �
 - ボタンは `custom_id` に幅を持たせる（`music:seek:-60` など）。幅を増やすときは `SEEK_STEPS` に足すだけで済む。**大きい幅を用意しておくと、小さいほうを連打するより取り直しの回数が減る**（下記のとおり後方シークは 1 回ごとに取り直しになるため）。`custom_id` は外から作れるので、受け取り側で上限を見る。
 - **シークの実体**は `TrackHandle::seek_async()`。ただし YouTube 音源は `HttpStream::is_seekable()` が `false` なので、**前方シークは効くが後方シークは songbird が `Compose`（yt-dlp）から取り直す**。数秒かかるため、ボタンのハンドラは先に `CreateInteractionResponse::Acknowledge`（DEFERRED_UPDATE_MESSAGE）を返してから動かし、終わってからメッセージを編集する。3 秒以内に ack しないと Discord が失敗表示にする。
 - 終端ちょうどへ飛ばすとシーク直後に曲が終わるので、長さが分かっているときは 3 秒手前で止める（`SEEK_TAIL_MARGIN`）。
-- **曲名は `[曲名](URL)` のリンクにする**（`music::track_link`）。URL は `AuxMetadata.source_url`（yt-dlp の `webpage_url`）から取るので、検索語で入れた曲でも実際に選ばれた動画へ飛べる。曲名は他人が付けたものなので `[` `*` `<` などを必ずエスケープする。エスケープを忘れるとリンクが壊れ、`<@123>` のような曲名はメンションとして解釈される。括弧を含む URL は**リンクにせず曲名だけ出す**（中途半端に組み立てて崩れるより良いため）。
+- **曲名は `[曲名](URL)` のリンクにする**（`music::track_link`）。URL は `AuxMetadata.source_url`（yt-dlp の `webpage_url`）から取るので、検索語で入れた曲でも実際に選ばれた動画へ飛べる。曲名は他人が付けたものなので `[` `*` `<` などを必ずエスケープする。エスケープを忘れるとリンクが壊れ、`<@123>` のような曲名はメンションとして解釈される。括弧を含む URL は**リンクにせず曲名だけ出す**（中途半端に組み立てて崩れるより良いため）。URL は `<...>` で囲む。囲まないと Discord がプレビューを展開し、`/queue` のように何曲も並ぶところが埋め込みだらけになる。poise の `CreateReply` には `SUPPRESS_EMBEDS` を立てる口が無いので、ここで抑えるしかない。
 
 ### 補足
 

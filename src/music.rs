@@ -380,10 +380,14 @@ async fn is_paused(queue: &songbird::tracks::TrackQueue) -> bool {
 ///
 /// 曲名は他人が付けたものなので `[` `]` や `*` が入りうる。素で埋めると
 /// リンクが壊れたり、意図しない太字・打ち消し線になったりする。必ずエスケープする。
+///
+/// URL は `<...>` で囲む。**囲まないと Discord がリンク先のプレビューを展開し、
+/// `/queue` のように何曲も並ぶところが埋め込みだらけになる。** poise の
+/// `CreateReply` には `SUPPRESS_EMBEDS` を立てる口が無いので、ここで抑える。
 pub fn track_link(title: &str, url: Option<&str>) -> String {
     let label = escape_markdown(title);
     match url.filter(|url| is_safe_link(url)) {
-        Some(url) => format!("[{label}]({url})"),
+        Some(url) => format!("[{label}](<{url}>)"),
         None => label,
     }
 }
@@ -466,8 +470,16 @@ mod tests {
     fn title_links_to_its_page() {
         assert_eq!(
             track_link("曲名", Some("https://youtu.be/abc")),
-            "[曲名](https://youtu.be/abc)"
+            "[曲名](<https://youtu.be/abc>)"
         );
+    }
+
+    /// URL を `<...>` で囲まないと、`/queue` が埋め込みだらけになる。
+    #[test]
+    fn the_url_is_wrapped_to_suppress_the_preview() {
+        let rendered = track_link("曲名", Some("https://youtu.be/abc"));
+        assert!(rendered.contains("(<https://"), "{rendered}");
+        assert!(rendered.ends_with(">)"), "{rendered}");
     }
 
     /// URL が取れなかった曲は曲名だけ出す。
@@ -481,7 +493,7 @@ mod tests {
     fn brackets_in_the_title_are_escaped() {
         assert_eq!(
             track_link("[MV] 曲名", Some("https://youtu.be/abc")),
-            "[\\[MV\\] 曲名](https://youtu.be/abc)"
+            "[\\[MV\\] 曲名](<https://youtu.be/abc>)"
         );
     }
 
