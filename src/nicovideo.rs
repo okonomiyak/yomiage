@@ -23,6 +23,7 @@ use songbird::input::core::io::ReadOnlySource;
 use songbird::input::{
     AudioStream, AudioStreamError, AuxMetadata, ChildContainer, Compose, core::io::MediaSource,
 };
+use uuid::Uuid;
 
 /// songbird が使うものと同じ実行ファイル名。
 const YTDLP: &str = "yt-dlp";
@@ -38,13 +39,6 @@ const COOKIES_ENV: &str = "NICO_COOKIES";
 ///
 /// 会員限定・年齢制限・センシティブ指定の動画はログイン状態が要る。
 /// **未設定でも普通に動く**（公開動画だけ再生できる）ので、無ければ黙って諦める。
-///
-/// # 置き場所について
-///
-/// **書き込み可能な場所に置くこと。** yt-dlp は終了時に必ず Cookie を書き戻すので、
-/// 読み取り専用でマウントすると `OSError: Read-only file system` で落ち、
-/// **抽出に成功していても終了コードが 1 になる**（実機で確認済み）。
-/// 書き戻しはセッションの更新でもあるので、置いたままにしておくと期限が延びる。
 fn cookies() -> Option<String> {
     let path = std::env::var(COOKIES_ENV).ok()?;
     let path = path.trim();
@@ -60,6 +54,51 @@ fn cookies() -> Option<String> {
         return None;
     }
     Some(path.to_owned())
+}
+
+/// yt-dlp に渡す使い捨ての Cookie コピー。drop で消える。
+struct CookieCopy(std::path::PathBuf);
+
+impl CookieCopy {
+    fn path(&self) -> Option<&str> {
+        self.0.to_str()
+    }
+}
+
+impl Drop for CookieCopy {
+    fn drop(&mut self) {
+        if let Err(error) = std::fs::remove_file(&self.0)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::debug!(path = %self.0.display(), %error, "failed to remove cookie copy");
+        }
+    }
+}
+
+/// 原本を複製し、使い捨てコピーのパスを返す。
+///
+/// # 原本を直接渡してはいけない
+///
+/// yt-dlp は終了時に**必ず** Cookie を書き戻す。そしてその書き戻しは
+/// `expiry=0` のセッション Cookie を捨てる。実機で原本が 29 行から 27 行になり、
+/// `mfa_session` が消えた。その結果ニコニコ側にセッションごと無効化され、
+/// **公開動画すら `Invalid session` で再生できなくなった**。
+///
+/// 読み取り専用で渡すのも不可。書き戻しに失敗して yt-dlp がクラッシュし、
+/// 抽出に成功していても終了コードが 1 になる。
+///
+/// そこで毎回コピーを渡す。書き戻しはコピー側が受けて捨てられ、原本は無傷で残る。
+/// 呼び出しごとに別ファイルなので、同時に走っても壊し合わない。
+fn cookie_copy() -> Option<CookieCopy> {
+    let source = cookies()?;
+    let target = std::env::temp_dir().join(format!("yomiage-nico-{}.txt", Uuid::new_v4()));
+    match std::fs::copy(&source, &target) {
+        Ok(_) => Some(CookieCopy(target)),
+        Err(error) => {
+            tracing::warn!(source, %error, "failed to copy the cookie file; 認証なしで続行する");
+            None
+        }
+    }
 }
 
 /// ニコニコ動画の 1 本。
@@ -101,8 +140,11 @@ impl Compose for NicoVideo {
             "-f",
             FORMAT,
         ]);
-        if let Some(path) = cookies() {
-            command.args(["--cookies", &path]);
+        // 原本ではなくコピーを渡す（理由は cookie_copy の説明）。
+        // 曲が終わるまで yt-dlp が生きるので、コピーもその間は消さない。
+        let jar = cookie_copy();
+        if let Some(path) = jar.as_ref().and_then(CookieCopy::path) {
+            command.args(["--cookies", path]);
         }
         // 標準出力へ流す。ここがこのモジュールの肝。
         command.args(["-o", "-", &self.url]);
@@ -126,9 +168,12 @@ impl Compose for NicoVideo {
 
         // ChildContainer は drop でプロセスを確実に殺す。/skip や /stop で
         // 再生をやめたときに yt-dlp が残らない。
-        let container = ChildContainer::from(child);
+        let stream = Stream {
+            inner: ChildContainer::from(child),
+            cookies: jar,
+        };
         Ok(AudioStream {
-            input: Box::new(ReadOnlySource::new(container)) as Box<dyn MediaSource>,
+            input: Box::new(ReadOnlySource::new(stream)) as Box<dyn MediaSource>,
         })
     }
 
@@ -145,8 +190,11 @@ impl Compose for NicoVideo {
         // yt-dlp の抽出が終わるまでワーカースレッドを止めてしまう。
         let mut command = tokio::process::Command::new(YTDLP);
         command.args(["-j", "--no-playlist", "--no-warnings"]);
-        if let Some(path) = cookies() {
-            command.args(["--cookies", &path]);
+        // 原本ではなくコピーを渡す（理由は cookie_copy の説明）。
+        // この関数を抜けるときに drop されて消える。
+        let jar = cookie_copy();
+        if let Some(path) = jar.as_ref().and_then(CookieCopy::path) {
+            command.args(["--cookies", path]);
         }
         command.arg(&self.url);
 
@@ -180,6 +228,22 @@ impl Compose for NicoVideo {
         };
         self.metadata = Some(metadata.clone());
         Ok(metadata)
+    }
+}
+
+/// yt-dlp の標準出力を読みつつ、使い捨ての Cookie コピーを道連れに消す。
+///
+/// フィールドの順番に意味がある。`inner` を先に落として yt-dlp を殺してから
+/// `cookies` を消す。逆にすると、まだ生きているプロセスの書き戻し先を先に消してしまう。
+struct Stream {
+    inner: ChildContainer,
+    #[allow(dead_code, reason = "drop でコピーを消すためだけに持つ")]
+    cookies: Option<CookieCopy>,
+}
+
+impl std::io::Read for Stream {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        self.inner.read(buffer)
     }
 }
 
