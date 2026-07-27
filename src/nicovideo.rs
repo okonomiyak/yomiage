@@ -151,6 +151,43 @@ struct Probe {
     duration: Option<f64>,
 }
 
+/// yt-dlp のエラー文を、そのまま Discord に出せる長さへ縮める。
+///
+/// yt-dlp は `ERROR: [niconico] sm123: 理由. Use --cookies ... See https://...` の
+/// ような長文を返す。そのまま貼るとチャンネルが荒れるので、理由だけ取り出す。
+pub fn readable_error(raw: &str) -> String {
+    // 最後の `ERROR:` 以降が本体。
+    let body = raw.rsplit("ERROR:").next().unwrap_or(raw).trim();
+    // 対処法の案内は利用者には関係ないので落とす。
+    let body = body
+        .split("Use --cookies")
+        .next()
+        .unwrap_or(body)
+        .trim()
+        .trim_end_matches('.');
+    // `[niconico] ` と、続く `sm123: ` の前置きを落とす。
+    let body = body
+        .strip_prefix('[')
+        .and_then(|rest| rest.split_once("] "))
+        .map_or(body, |(_, rest)| rest);
+    let body = body.split_once(": ").map_or(body, |(_, rest)| rest);
+
+    // 一番よく当たるものは日本語にして、対処が分かるようにする。
+    if body.contains("login required") || body.contains("Sensitive content") {
+        return "ログインが必要な動画のため再生できません（年齢制限やセンシティブ指定など）"
+            .to_owned();
+    }
+
+    // それでも長いものは切る。
+    const LIMIT: usize = 150;
+    if body.chars().count() > LIMIT {
+        let short: String = body.chars().take(LIMIT).collect();
+        format!("{short}…")
+    } else {
+        body.to_owned()
+    }
+}
+
 /// ニコニコ動画の URL か。
 ///
 /// **ホストだけを見る。** 文字列に `nicovideo.jp` が含まれるかで判定すると、
@@ -188,6 +225,42 @@ fn host_of(url: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 実際に本番で出た文言。長い対処法の案内をそのまま貼らないこと。
+    #[test]
+    fn login_required_becomes_a_short_japanese_message() {
+        let raw = "failed to create audio: yt-dlp が失敗した: ERROR: [niconico] \
+                   sm43138635: Sensitive content, login required. Use --cookies, \
+                   --cookies-from-browser, --username and --password, --netrc-cmd, \
+                   or --netrc (niconico) to provide account credentials. See \
+                   https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp";
+        assert_eq!(
+            readable_error(raw),
+            "ログインが必要な動画のため再生できません（年齢制限やセンシティブ指定など）"
+        );
+    }
+
+    /// 前置きを落として理由だけ残す。
+    #[test]
+    fn the_extractor_prefix_is_dropped() {
+        let raw = "ERROR: [niconico] sm1: Video unavailable";
+        assert_eq!(readable_error(raw), "Video unavailable");
+    }
+
+    /// 前置きが無い文はそのまま通す。
+    #[test]
+    fn a_plain_message_is_kept() {
+        assert_eq!(readable_error("Video unavailable"), "Video unavailable");
+    }
+
+    /// 長すぎるものは切る。Discord に長文を吐かないため。
+    #[test]
+    fn a_long_message_is_truncated() {
+        let raw = format!("ERROR: [niconico] sm1: {}", "あ".repeat(400));
+        let shortened = readable_error(&raw);
+        assert!(shortened.chars().count() <= 151, "{shortened}");
+        assert!(shortened.ends_with('…'), "{shortened}");
+    }
 
     #[test]
     fn watch_urls_are_recognised() {

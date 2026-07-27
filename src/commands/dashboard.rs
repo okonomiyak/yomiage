@@ -102,7 +102,8 @@ async fn follow(
     channel: serenity::ChannelId,
     message: serenity::MessageId,
 ) {
-    tracing::debug!(%guild_id, %message, "dashboard ticker started");
+    // `message` は tracing がログ本文に使う予約名なので、フィールド名を変えて渡す。
+    tracing::debug!(%guild_id, panel = %message, "dashboard ticker started");
 
     let mut last: Option<String> = None;
     let mut idle = 0_u32;

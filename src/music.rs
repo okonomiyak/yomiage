@@ -120,7 +120,18 @@ impl Manager {
         // Cookie が足りず 403 になるため（理由は nicovideo モジュールの説明を参照）。
         let (input, mut info) = if nicovideo::is_nicovideo(query) {
             let mut source = nicovideo::NicoVideo::new(query.to_owned());
-            let info = describe(&mut source, guild_id, query).await;
+            // メタデータも実際の取得も同じ yt-dlp なので、**ここで引けない動画は
+            // 再生もできない**（会員限定・センシティブ指定など）。黙って積むと
+            // 「再生します」と出したきり無音になり、理由が誰にも伝わらない。
+            let metadata = source.aux_metadata().await.map_err(|error| {
+                tracing::info!(%guild_id, %error, "nicovideo is not playable");
+                anyhow::anyhow!("{}", nicovideo::readable_error(&error.to_string()))
+            })?;
+            let info = TrackInfo {
+                title: metadata.title.unwrap_or_else(|| query.to_owned()),
+                duration: metadata.duration,
+                url: metadata.source_url,
+            };
             (Input::Lazy(Box::new(source)), info)
         } else {
             let mut source = if is_url {
