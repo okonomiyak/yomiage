@@ -14,10 +14,12 @@ use std::time::Duration;
 use anyhow::Context as _;
 use poise::serenity_prelude::GuildId;
 use songbird::Songbird;
-use songbird::input::{Compose, YoutubeDl};
+use songbird::input::{Compose, Input, YoutubeDl};
 use songbird::tracks::TrackHandle;
 use tokio::sync::Mutex;
 use uuid::Uuid;
+
+use crate::nicovideo;
 
 /// タイトルも長さも取れなかった曲の表示。
 const UNKNOWN_TITLE: &str = "（タイトル不明）";
@@ -79,29 +81,25 @@ impl Manager {
             .get(guild_id)
             .context("ボイスチャンネルに接続していない")?;
 
-        let mut source = if query.starts_with("http://") || query.starts_with("https://") {
-            YoutubeDl::new(self.http.clone(), query.to_owned())
+        // ニコニコだけは yt-dlp に直接ダウンロードさせる。songbird に URL を渡すと
+        // Cookie が足りず 403 になるため（理由は nicovideo モジュールの説明を参照）。
+        let (input, title, duration) = if nicovideo::is_nicovideo(query) {
+            let mut source = nicovideo::NicoVideo::new(query.to_owned());
+            let (title, duration) = describe(&mut source, guild_id, query).await;
+            (Input::Lazy(Box::new(source)), title, duration)
         } else {
-            YoutubeDl::new_search(self.http.clone(), query.to_owned())
-        };
-
-        // タイトルと長さは取れなくても再生は続ける（yt-dlp をもう一度叩くだけなので失敗しうる）。
-        // ここで取った長さをそのまま持っておく。あとで進捗バーを描くために
-        // yt-dlp を叩き直さずに済ませたいため。
-        let (title, duration) = match source.aux_metadata().await {
-            Ok(metadata) => (
-                metadata.title.unwrap_or_else(|| query.to_owned()),
-                metadata.duration,
-            ),
-            Err(error) => {
-                tracing::debug!(%guild_id, %error, "failed to fetch metadata");
-                (query.to_owned(), None)
-            }
+            let mut source = if query.starts_with("http://") || query.starts_with("https://") {
+                YoutubeDl::new(self.http.clone(), query.to_owned())
+            } else {
+                YoutubeDl::new_search(self.http.clone(), query.to_owned())
+            };
+            let (title, duration) = describe(&mut source, guild_id, query).await;
+            (Input::from(source), title, duration)
         };
 
         let (handle, position) = {
             let mut call = call_lock.lock().await;
-            let handle = call.enqueue_input(source.into()).await;
+            let handle = call.enqueue_input(input).await;
             (handle, call.queue().len())
         };
 
@@ -294,6 +292,27 @@ impl Manager {
             .iter()
             .filter(|handle| handle.set_volume(volume).is_ok())
             .count()
+    }
+}
+
+/// タイトルと長さを引く。取れなくても再生は続ける（yt-dlp をもう一度叩くので失敗しうる）。
+///
+/// ここで取った長さをそのまま持っておく。あとで進捗バーを描くたびに
+/// yt-dlp を叩き直さずに済ませたいため。
+async fn describe(
+    source: &mut dyn Compose,
+    guild_id: GuildId,
+    fallback: &str,
+) -> (String, Option<Duration>) {
+    match source.aux_metadata().await {
+        Ok(metadata) => (
+            metadata.title.unwrap_or_else(|| fallback.to_owned()),
+            metadata.duration,
+        ),
+        Err(error) => {
+            tracing::debug!(%guild_id, %error, "failed to fetch metadata");
+            (fallback.to_owned(), None)
+        }
     }
 }
 

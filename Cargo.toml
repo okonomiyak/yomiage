@@ -28,6 +28,9 @@ dotenvy = "0.15.7"
 thiserror = "2.0.19"
 tokio = { version = "1.53.1", features = [
     "macros",
+    # process: ニコニコのメタデータ取得で yt-dlp を待つ（同期の std::process だと
+    # 数秒ワーカースレッドを止めてしまう）。songbird が同じ理由で有効にしている。
+    "process",
     "rt-multi-thread",
     "signal",
     "sync",

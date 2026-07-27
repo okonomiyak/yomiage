@@ -20,6 +20,7 @@ pub async fn help(ctx: Context<'_>) -> Result<(), Error> {
 
 **音楽**
 `/play <URL または検索語>` … キューに積む。空いていればすぐ流す
+　（YouTube とニコニコ動画の URL に対応。検索語のときは YouTube から探す）
 `/queue` … 再生中と待機中を見る
 `/next` … 次の曲へ / `/stop` … 止めてキューを空にする
 `/volume <0-100>` … 音量（サーバー単位）

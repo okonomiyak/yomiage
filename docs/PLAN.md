@@ -427,6 +427,10 @@ ssh "$PVE_HOST" "pct exec $CTID -- docker logs -f yomiage-bot"
    - **5 分間何も流れなければタスクを畳む。** 放置されたパネルを永久に追い掛けない。ボタンを押すと `Panels::start` が呼ばれて再開するので、畳まれた後でも復活する（Bot の再起動後も同じ経路で復活する）。
    - 曲の長さは `/play` の `aux_metadata()` から取って自前の表に持つ。バーを描くたびに yt-dlp を叩き直さないため。取れない曲（ライブ配信など）はバーを出さず経過時間だけ出す。
    - シークは ⏪ ⏩ の ±10 秒のみ。位置を直接指定する `/seek` は作らない。詳細は §7.3。
+8. **決定 2026-07-27: ニコニコ動画は yt-dlp の標準出力を直接流す**（`src/nicovideo.rs`）。songbird の `YoutubeDl` は URL とヘッダだけ取り出して**取得を songbird 自身が行う**が、ニコニコの配信（domand）は抽出時に yt-dlp が確立する `domand_bid` Cookie を要求し、これが `http_headers` に含まれないため 403 になる。
+   - `Compose` として実装し、**再生が始まる直前まで yt-dlp を起動しない**。キュー後方の曲が先にダウンロードを始めてパイプを詰まらせないため。
+   - 音声は HLS / fMP4 + AAC が選ばれる。symphonia の `isomp4` と `aac` に依存する（どちらかを外すと取得は成功して音だけ出なくなる）。回帰テストは `nicovideo::tests::nicovideo_stream_is_playable_by_songbird`（`#[ignore]`）。
+   - **URL のみ対応。検索語は従来どおり YouTube から探す**。yt-dlp には `nicosearch:` もあるが、どちらを引くかを利用者が選べないと混乱するため入れていない。
 
 ### 13-A 決定 3 から派生した未決事項（項目 13-1 とは別物）
 

@@ -63,8 +63,8 @@ Discord のテキストチャンネルの発言を VOICEVOX で読み上げる B
 ## 3. 開発と反映
 
 ```sh
-cargo test                  # 単体テスト 44 本（ENGINE 不要）
-cargo test -- --ignored     # ENGINE 疎通テスト 5 本（要 ENGINE）
+cargo test                  # 単体テスト 50 本（ENGINE 不要）
+cargo test -- --ignored     # 疎通テスト 6 本（ENGINE 5 本 / ニコニコ 1 本は要ネットワーク）
 cargo clippy -- -D warnings
 cargo fmt
 sh scripts/deploy.sh        # コミット済みの HEAD をサーバーへ送ってビルド・再起動
@@ -96,6 +96,7 @@ src/
   speech.rs    ギルドごとの読み上げキュー
   music.rs     音楽再生。キューは songbird の builtin-queue に任せる
                進捗バーの描画は純粋関数（progress_bar / format_time、テスト 9 本）
+  nicovideo.rs ニコニコ動画。yt-dlp の標準出力を直接流す Compose 実装
   exvoice.rs   収録済み音声素材の対応表
   text.rs      テキスト正規化（純粋関数、テスト 20 本）
   db.rs        SQLite（sqlx）
@@ -131,6 +132,13 @@ migrations/    0001 初期 / 0002 紐づけ / 0003 音量 / 0004 機能スイッ
   `Acknowledge` を返してから動かすこと（3 秒以内に ack しないと Discord が失敗表示にする）
 - **docs.rs の songbird 0.6.0 はビルドに失敗していて API ドキュメントが無い。**
   GitHub の `v0.6.0` タグの examples とソースを読むこと
+- **ニコニコは songbird の `YoutubeDl` では鳴らない（403）。** `YoutubeDl` は
+  `yt-dlp -j` で URL とヘッダを取り出し、**取得は songbird 自身が HTTP で行う**。
+  ニコニコの配信（domand）は抽出時に yt-dlp が確立する **`domand_bid` Cookie** を
+  要求するが、この Cookie は yt-dlp が返す `http_headers` に**含まれない**。
+  そのため `src/nicovideo.rs` で `yt-dlp -o -` を起動し、標準出力を
+  `ChildContainer` 経由で songbird に流している。同じ症状の site が出たら同じ手が使える。
+  切り分けは「yt-dlp 単体では落とせるのに、返ってきた URL を curl すると 403」で付く
 
 ### Discord
 

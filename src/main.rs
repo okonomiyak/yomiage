@@ -2,6 +2,7 @@ mod commands;
 mod db;
 mod exvoice;
 mod music;
+mod nicovideo;
 mod speech;
 mod text;
 mod voicevox;
