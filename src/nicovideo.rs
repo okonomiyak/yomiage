@@ -31,6 +31,37 @@ const YTDLP: &str = "yt-dlp";
 /// songbird の `YoutubeDl` と同じ指定にして、挙動を合わせておく。
 const FORMAT: &str = "ba[abr>0][vcodec=none]/best";
 
+/// Cookie ファイルの場所を持つ環境変数。
+const COOKIES_ENV: &str = "NICO_COOKIES";
+
+/// ログイン済みの Cookie ファイル（Netscape 形式）を探す。
+///
+/// 会員限定・年齢制限・センシティブ指定の動画はログイン状態が要る。
+/// **未設定でも普通に動く**（公開動画だけ再生できる）ので、無ければ黙って諦める。
+///
+/// # 置き場所について
+///
+/// **書き込み可能な場所に置くこと。** yt-dlp は終了時に必ず Cookie を書き戻すので、
+/// 読み取り専用でマウントすると `OSError: Read-only file system` で落ち、
+/// **抽出に成功していても終了コードが 1 になる**（実機で確認済み）。
+/// 書き戻しはセッションの更新でもあるので、置いたままにしておくと期限が延びる。
+fn cookies() -> Option<String> {
+    let path = std::env::var(COOKIES_ENV).ok()?;
+    let path = path.trim();
+    if path.is_empty() {
+        return None;
+    }
+    // 置き忘れ・パスの打ち間違いで毎回落ちるより、認証なしで動くほうがよい。
+    if !std::path::Path::new(path).is_file() {
+        tracing::warn!(
+            path,
+            "{COOKIES_ENV} の指す先にファイルが無い; 認証なしで続行する"
+        );
+        return None;
+    }
+    Some(path.to_owned())
+}
+
 /// ニコニコ動画の 1 本。
 ///
 /// `Compose` にしてあるので、**再生が始まる直前まで yt-dlp を起動しない**。
@@ -61,19 +92,22 @@ impl Compose for NicoVideo {
     async fn create_async(
         &mut self,
     ) -> Result<AudioStream<Box<dyn MediaSource>>, AudioStreamError> {
-        let child = Command::new(YTDLP)
-            .args([
-                "--no-playlist",
-                "--quiet",
-                "--no-warnings",
-                "--no-progress",
-                "-f",
-                FORMAT,
-                // 標準出力へ流す。ここがこのモジュールの肝。
-                "-o",
-                "-",
-                &self.url,
-            ])
+        let mut command = Command::new(YTDLP);
+        command.args([
+            "--no-playlist",
+            "--quiet",
+            "--no-warnings",
+            "--no-progress",
+            "-f",
+            FORMAT,
+        ]);
+        if let Some(path) = cookies() {
+            command.args(["--cookies", &path]);
+        }
+        // 標準出力へ流す。ここがこのモジュールの肝。
+        command.args(["-o", "-", &self.url]);
+
+        let child = command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             // 進捗も警告も読まないので捨てる。失敗したら stdout が空になり、
@@ -109,8 +143,14 @@ impl Compose for NicoVideo {
 
         // ここは待つので tokio 側の Command を使う。std::process の output() だと
         // yt-dlp の抽出が終わるまでワーカースレッドを止めてしまう。
-        let output = tokio::process::Command::new(YTDLP)
-            .args(["-j", "--no-playlist", "--no-warnings", &self.url])
+        let mut command = tokio::process::Command::new(YTDLP);
+        command.args(["-j", "--no-playlist", "--no-warnings"]);
+        if let Some(path) = cookies() {
+            command.args(["--cookies", &path]);
+        }
+        command.arg(&self.url);
+
+        let output = command
             .stdin(Stdio::null())
             .output()
             .await

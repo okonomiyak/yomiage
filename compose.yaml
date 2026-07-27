@@ -32,6 +32,12 @@ services:
       - GUILD_ID=${GUILD_ID:-}
       # 収録済み音声素材の置き場。無ければ空のまま起動し、合成のみで動く。
       - EXVOICE_DIR=/exvoice
+      # ニコニコのログイン済み Cookie（会員限定・センシティブ指定の動画用）。
+      # 置き場は data/ の中にする。専用の bind mount にすると、ファイルを
+      # 置き忘れたときに Docker が**ディレクトリとして作ってしまう**ため。
+      # data/ は既に書き込み可能でマウントしてあり、yt-dlp の書き戻しも通る。
+      # ファイルが無ければ認証なしで動く（公開動画だけ再生できる）。
+      - NICO_COOKIES=${NICO_COOKIES:-/data/nico_cookies.txt}
     volumes:
       - ./data:/data
       # 素材はリポジトリに入れない（配布物）。サーバーに直接置く。
