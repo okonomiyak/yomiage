@@ -156,7 +156,9 @@ impl Manager {
                             if !reported {
                                 reported = true;
                                 if let Some(channel) = task.origin {
-                                    let notice = "音声合成に失敗しました。VOICEVOX ENGINE が                                                  応答していない可能性があります。                                                  復旧するまでこの通知は出しません。";
+                                    let notice = "音声合成に失敗しました。\
+                                                  VOICEVOX ENGINE が応答していない可能性があります。\
+                                                  復旧するまでこの通知は出しません。";
                                     if let Err(error) = channel.say(&http, notice).await {
                                         tracing::warn!(%guild_id, %error, "failed to report engine outage");
                                     }

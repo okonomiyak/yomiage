@@ -27,6 +27,8 @@ pub struct Data {
     pub exvoice: Arc<exvoice::Library>,
     pub speech: Arc<speech::Manager>,
     pub music: Arc<music::Manager>,
+    /// 音楽パネルのシークバーを進めるタスク（ギルドごとに 1 本）。
+    pub panels: Arc<commands::dashboard::Panels>,
     /// `/voice` のオートコンプリート用。起動時に `/speakers` から作る（PLAN §8）。
     /// ENGINE が落ちていれば空のままにして、コマンド側で検証を諦める。
     pub styles: Vec<StyleChoice>,
@@ -461,6 +463,7 @@ async fn main() -> anyhow::Result<()> {
                             ctx.http.clone(),
                         )),
                         music: Arc::new(music::Manager::new(songbird, reqwest::Client::new())),
+                        panels: Arc::default(),
                         styles,
                     })
                 })

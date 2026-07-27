@@ -42,6 +42,8 @@ Discord のテキストチャンネルの発言を VOICEVOX で読み上げる B
 
 読み上げ以外の主な挙動:
 
+- `/dashboard` のパネルにシークバーが出る。5 秒ごとに本文を編集して進み、
+  ⏪ ⏩ で 10 秒ずつ動かせる。5 分間何も流れないと編集をやめ、ボタンを押すと再開する
 - VC が無人になると自動退出し、テキストチャンネルに通知する
 - 入退室と配信（Go Live）の開始・終了をアナウンスする（本人の設定話者で読む）
 - 再起動時は VC から抜けてから終了し、起動時に読み上げ登録を全消去する
@@ -61,7 +63,7 @@ Discord のテキストチャンネルの発言を VOICEVOX で読み上げる B
 ## 3. 開発と反映
 
 ```sh
-cargo test                  # 単体テスト 35 本（ENGINE 不要）
+cargo test                  # 単体テスト 44 本（ENGINE 不要）
 cargo test -- --ignored     # ENGINE 疎通テスト 5 本（要 ENGINE）
 cargo clippy -- -D warnings
 cargo fmt
@@ -93,6 +95,7 @@ src/
   voicevox.rs  ENGINE クライアント。独自エラー型（thiserror）
   speech.rs    ギルドごとの読み上げキュー
   music.rs     音楽再生。キューは songbird の builtin-queue に任せる
+               進捗バーの描画は純粋関数（progress_bar / format_time、テスト 9 本）
   exvoice.rs   収録済み音声素材の対応表
   text.rs      テキスト正規化（純粋関数、テスト 20 本）
   db.rs        SQLite（sqlx）
@@ -120,7 +123,12 @@ migrations/    0001 初期 / 0002 紐づけ / 0003 音量 / 0004 機能スイッ
 - **sqlx は 0.8 系で止めている。** 0.9 は Rust 1.94 以上を要求する。0.9 では
   sqlite の feature 名が `sqlite` → `sqlite-bundled` に変わっている
 - **songbird 0.6 の `TrackHandle::data()` は型が違うと panic する。** 曲名の保持には
-  使わず、自前の UUID→タイトル表にしてある
+  使わず、自前の UUID→曲情報（タイトルと長さ）の表にしてある
+- **YouTube 音源は後方シークが遅い。** `src/input/sources/http.rs` の
+  `HttpStream::is_seekable()` が `false` を返すので、`TrackHandle::seek_async()` の
+  前方シークは効くが、**巻き戻しは songbird が `Compose`（yt-dlp）から丸ごと
+  取り直す**。⏪ を連打するとそのたびに再取得が走る。パネルのボタンは先に
+  `Acknowledge` を返してから動かすこと（3 秒以内に ack しないと Discord が失敗表示にする）
 - **docs.rs の songbird 0.6.0 はビルドに失敗していて API ドキュメントが無い。**
   GitHub の `v0.6.0` タグの examples とソースを読むこと
 
@@ -130,6 +138,11 @@ migrations/    0001 初期 / 0002 紐づけ / 0003 音量 / 0004 機能スイッ
 - **コマンド登録先の切り替えでは反対側を消す。** ギルド限定とグローバルの両方に
   残ると一覧に二重で出る。`GUILD_ID` 環境変数で切り替え、消す処理も実装済み
 - **`/play` は defer が要る。** yt-dlp の起動で 3 秒を超え、応答なし扱いになる
+- **ボタンで時間のかかる処理をするときは `Acknowledge`（DEFERRED_UPDATE_MESSAGE）。**
+  `Defer` だと「考え中」表示が出てしまう。ack した後は `UpdateMessage` が使えないので、
+  メッセージを `ChannelId::edit_message` で直接編集する
+- **interaction のトークンは 15 分で切れる。** シークバーのように後から編集し続ける
+  ものは、貼ったときに `MessageId` を取っておいて直接編集する
 - **オートコンプリートと日本語入力は相性が悪い。** 変換確定前の文字列が飛んでくるので
   漢字の話者名に一致しない。スタイル ID でも引けるようにして回避している
 

@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context as _;
 use poise::serenity_prelude::GuildId;
@@ -18,13 +19,27 @@ use songbird::tracks::TrackHandle;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+/// タイトルも長さも取れなかった曲の表示。
+const UNKNOWN_TITLE: &str = "（タイトル不明）";
+
+/// シークで曲の終端に着地しないよう手前に残す余白。
+/// 終端ちょうどへ飛ばすと、シークが終わった瞬間に曲が終わる。
+const SEEK_TAIL_MARGIN: Duration = Duration::from_secs(3);
+
 pub struct Manager {
     songbird: Arc<Songbird>,
     /// yt-dlp が返したストリーム URL を取りに行くのに使う。
     http: reqwest::Client,
-    /// トラック UUID → 曲名。songbird 0.6 の `TrackHandle::data` は型が違うと
+    /// トラック UUID → 曲の情報。songbird 0.6 の `TrackHandle::data` は型が違うと
     /// panic するので使わない（読み上げのトラックと混ざる余地を残さない）。
-    titles: Mutex<HashMap<Uuid, String>>,
+    tracks: Mutex<HashMap<Uuid, TrackInfo>>,
+}
+
+/// キューに積んだ曲の付随情報。songbird 側からは取れないので自前で持つ。
+struct TrackInfo {
+    title: String,
+    /// yt-dlp が返した曲の長さ。ライブ配信などでは取れない。
+    duration: Option<Duration>,
 }
 
 /// キューに積んだ結果。
@@ -34,12 +49,21 @@ pub struct Queued {
     pub position: usize,
 }
 
+/// 今流れている曲の状態。パネルの描画に要るものだけ。
+pub struct NowPlaying {
+    pub title: String,
+    pub position: Duration,
+    /// 取れないことがある（ライブ配信など）。その場合はバーを出さない。
+    pub duration: Option<Duration>,
+    pub paused: bool,
+}
+
 impl Manager {
     pub fn new(songbird: Arc<Songbird>, http: reqwest::Client) -> Self {
         Self {
             songbird,
             http,
-            titles: Mutex::new(HashMap::new()),
+            tracks: Mutex::new(HashMap::new()),
         }
     }
 
@@ -61,12 +85,17 @@ impl Manager {
             YoutubeDl::new_search(self.http.clone(), query.to_owned())
         };
 
-        // タイトルは取れなくても再生は続ける（yt-dlp をもう一度叩くだけなので失敗しうる）。
-        let title = match source.aux_metadata().await {
-            Ok(metadata) => metadata.title.unwrap_or_else(|| query.to_owned()),
+        // タイトルと長さは取れなくても再生は続ける（yt-dlp をもう一度叩くだけなので失敗しうる）。
+        // ここで取った長さをそのまま持っておく。あとで進捗バーを描くために
+        // yt-dlp を叩き直さずに済ませたいため。
+        let (title, duration) = match source.aux_metadata().await {
+            Ok(metadata) => (
+                metadata.title.unwrap_or_else(|| query.to_owned()),
+                metadata.duration,
+            ),
             Err(error) => {
                 tracing::debug!(%guild_id, %error, "failed to fetch metadata");
-                query.to_owned()
+                (query.to_owned(), None)
             }
         };
 
@@ -79,12 +108,21 @@ impl Manager {
         if let Err(error) = handle.set_volume(volume) {
             tracing::warn!(%guild_id, %error, "failed to apply volume");
         }
-        self.titles
-            .lock()
-            .await
-            .insert(handle.uuid(), title.clone());
+        self.tracks.lock().await.insert(
+            handle.uuid(),
+            TrackInfo {
+                title: title.clone(),
+                duration,
+            },
+        );
 
-        tracing::info!(%guild_id, position, title = title.as_str(), "music queued");
+        tracing::info!(
+            %guild_id,
+            position,
+            title = title.as_str(),
+            duration_secs = duration.map(|value| value.as_secs()),
+            "music queued",
+        );
         Ok(Queued { title, position })
     }
 
@@ -98,8 +136,8 @@ impl Manager {
             call.queue().current_queue()
         };
 
-        let mut known = self.titles.lock().await;
-        // キューから消えた曲の名前は捨てる。放っておくと溜まり続ける。
+        let mut known = self.tracks.lock().await;
+        // キューから消えた曲の情報は捨てる。放っておくと溜まり続ける。
         known.retain(|uuid, _| handles.iter().any(|handle| handle.uuid() == *uuid));
 
         handles
@@ -107,10 +145,80 @@ impl Manager {
             .map(|handle| {
                 known
                     .get(&handle.uuid())
-                    .cloned()
-                    .unwrap_or_else(|| "（タイトル不明）".to_owned())
+                    .map_or_else(|| UNKNOWN_TITLE.to_owned(), |info| info.title.clone())
             })
             .collect()
+    }
+
+    /// 今流れている曲と再生位置。流れていなければ None。
+    pub async fn now_playing(&self, guild_id: GuildId) -> Option<NowPlaying> {
+        let call_lock = self.songbird.get(guild_id)?;
+        let current = {
+            let call = call_lock.lock().await;
+            call.queue().current()
+        }?;
+
+        // 取れなければ「流れていない」扱いにする。パネルが古い位置で止まるより良い。
+        let state = current.get_info().await.ok()?;
+
+        let known = self.tracks.lock().await;
+        let info = known.get(&current.uuid());
+        Some(NowPlaying {
+            title: info.map_or_else(|| UNKNOWN_TITLE.to_owned(), |info| info.title.clone()),
+            position: state.position,
+            duration: info.and_then(|info| info.duration),
+            paused: state.playing == songbird::tracks::PlayMode::Pause,
+        })
+    }
+
+    /// 再生位置を前後に動かす。動かせたら着地した位置を返す。
+    ///
+    /// YouTube 音源は `HttpStream::is_seekable()` が false なので、**後方シークは
+    /// songbird が `Compose`（yt-dlp）から取り直す**。数秒かかるので、呼び出し側は
+    /// 先に interaction を ack しておくこと。
+    pub async fn seek_relative(&self, guild_id: GuildId, delta_secs: i64) -> Option<Duration> {
+        let call_lock = self.songbird.get(guild_id)?;
+        let current = {
+            let call = call_lock.lock().await;
+            call.queue().current()
+        }?;
+
+        let position = current.get_info().await.ok()?.position;
+        let step = Duration::from_secs(delta_secs.unsigned_abs());
+        let mut target = if delta_secs >= 0 {
+            position.saturating_add(step)
+        } else {
+            position.saturating_sub(step)
+        };
+
+        // 終端へ飛ばすとシーク直後に曲が終わってしまうので、少し手前で止める。
+        let total = self
+            .tracks
+            .lock()
+            .await
+            .get(&current.uuid())
+            .and_then(|info| info.duration);
+        if let Some(total) = total
+            && target.saturating_add(SEEK_TAIL_MARGIN) > total
+        {
+            target = total.saturating_sub(SEEK_TAIL_MARGIN);
+        }
+
+        match current.seek_async(target).await {
+            Ok(reached) => {
+                tracing::info!(
+                    %guild_id,
+                    delta_secs,
+                    reached_secs = reached.as_secs(),
+                    "music seeked",
+                );
+                Some(reached)
+            }
+            Err(error) => {
+                tracing::warn!(%guild_id, %error, delta_secs, "failed to seek");
+                None
+            }
+        }
     }
 
     /// 一時停止と再開を切り替える。切り替え後に一時停止中なら true を返す。
@@ -136,18 +244,6 @@ impl Manager {
             return None;
         }
         Some(!paused)
-    }
-
-    /// 一時停止中かどうか。流れていなければ false。
-    pub async fn is_paused(&self, guild_id: GuildId) -> bool {
-        let Some(call_lock) = self.songbird.get(guild_id) else {
-            return false;
-        };
-        let queue = {
-            let call = call_lock.lock().await;
-            call.queue().clone()
-        };
-        is_paused(&queue).await
     }
 
     /// 今の曲を飛ばして次へ。飛ばすものがあれば true。
@@ -179,7 +275,7 @@ impl Manager {
         }
         call.queue().stop();
         drop(call);
-        self.titles.lock().await.clear();
+        self.tracks.lock().await.clear();
         tracing::debug!(%guild_id, "music queue cleared");
         true
     }
@@ -209,5 +305,131 @@ async fn is_paused(queue: &songbird::tracks::TrackQueue) -> bool {
     match current.get_info().await {
         Ok(state) => state.playing == songbird::tracks::PlayMode::Pause,
         Err(_) => false,
+    }
+}
+
+/// 進捗バーの目盛りの数。スマホの幅で折り返さない程度に抑えている。
+const BAR_CELLS: usize = 15;
+
+/// `▬▬▬◉▬▬▬  2:14 / 4:52` を作る。
+///
+/// 長さが分からない曲（ライブ配信など）はバーが嘘になるので、経過時間だけ出す。
+pub fn progress_bar(position: Duration, total: Option<Duration>) -> String {
+    let Some(total) = total.filter(|total| !total.is_zero()) else {
+        return format!("{}（長さ不明）", format_time(position));
+    };
+
+    // 位置が長さを超えることがある（シーク直後や yt-dlp のメタデータのずれ）。
+    let position = position.min(total);
+    let ratio = position.as_secs_f64() / total.as_secs_f64();
+    // 最後の目盛りに乗るのは本当に終端まで来たときだけにする。
+    let filled = ((ratio * BAR_CELLS as f64) as usize).min(BAR_CELLS - 1);
+
+    let bar: String = (0..BAR_CELLS)
+        .map(|index| if index == filled { '◉' } else { '▬' })
+        .collect();
+    format!("{bar}  {} / {}", format_time(position), format_time(total))
+}
+
+/// `m:ss` 形式。1 時間を超えるものだけ `h:mm:ss` にする。
+pub fn format_time(value: Duration) -> String {
+    let total = value.as_secs();
+    let (hours, minutes, seconds) = (total / 3600, (total % 3600) / 60, total % 60);
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes}:{seconds:02}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn secs(value: u64) -> Duration {
+        Duration::from_secs(value)
+    }
+
+    /// バーの本体（時刻より前の部分）だけ取り出す。
+    fn cells(rendered: &str) -> Vec<char> {
+        rendered
+            .chars()
+            .take_while(|c| *c == '▬' || *c == '◉')
+            .collect()
+    }
+
+    #[test]
+    fn bar_always_has_a_fixed_number_of_cells() {
+        for position in [0, 1, 60, 145, 291, 292, 1000] {
+            let rendered = progress_bar(secs(position), Some(secs(292)));
+            assert_eq!(cells(&rendered).len(), BAR_CELLS, "position={position}");
+        }
+    }
+
+    #[test]
+    fn knob_starts_at_the_left() {
+        let rendered = progress_bar(secs(0), Some(secs(292)));
+        assert_eq!(cells(&rendered).iter().position(|c| *c == '◉'), Some(0));
+        assert!(rendered.ends_with("0:00 / 4:52"), "{rendered}");
+    }
+
+    #[test]
+    fn knob_moves_with_the_position() {
+        let rendered = progress_bar(secs(146), Some(secs(292)));
+        // ちょうど半分なので 15 目盛りの 7 番目（0 起算）に乗る。
+        assert_eq!(cells(&rendered).iter().position(|c| *c == '◉'), Some(7));
+        assert!(rendered.ends_with("2:26 / 4:52"), "{rendered}");
+    }
+
+    #[test]
+    fn knob_stops_at_the_last_cell() {
+        let rendered = progress_bar(secs(292), Some(secs(292)));
+        assert_eq!(
+            cells(&rendered).iter().position(|c| *c == '◉'),
+            Some(BAR_CELLS - 1)
+        );
+    }
+
+    /// 位置が長さを超えても描けること。はみ出した位置は表示上も丸める。
+    #[test]
+    fn position_beyond_the_end_is_clamped() {
+        let rendered = progress_bar(secs(400), Some(secs(292)));
+        assert_eq!(
+            cells(&rendered).iter().position(|c| *c == '◉'),
+            Some(BAR_CELLS - 1)
+        );
+        assert!(rendered.ends_with("4:52 / 4:52"), "{rendered}");
+    }
+
+    /// 長さ 0 で割り算しないこと。
+    #[test]
+    fn zero_length_falls_back_to_elapsed_only() {
+        let rendered = progress_bar(secs(10), Some(secs(0)));
+        assert_eq!(rendered, "0:10（長さ不明）");
+    }
+
+    #[test]
+    fn unknown_length_falls_back_to_elapsed_only() {
+        let rendered = progress_bar(secs(75), None);
+        assert_eq!(rendered, "1:15（長さ不明）");
+        assert!(cells(&rendered).is_empty());
+    }
+
+    #[test]
+    fn time_is_formatted_as_minutes_and_seconds() {
+        assert_eq!(format_time(secs(0)), "0:00");
+        assert_eq!(format_time(secs(9)), "0:09");
+        assert_eq!(format_time(secs(74)), "1:14");
+        assert_eq!(format_time(secs(292)), "4:52");
+        assert_eq!(format_time(secs(599)), "9:59");
+    }
+
+    /// 1 時間を超えたら時も出す（長い配信アーカイブ）。
+    #[test]
+    fn hours_are_shown_only_when_needed() {
+        assert_eq!(format_time(secs(3599)), "59:59");
+        assert_eq!(format_time(secs(3600)), "1:00:00");
+        assert_eq!(format_time(secs(3661)), "1:01:01");
+        assert_eq!(format_time(secs(7325)), "2:02:05");
     }
 }

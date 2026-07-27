@@ -77,6 +77,11 @@ pub async fn queue(ctx: Context<'_>) -> Result<(), Error> {
     };
 
     let mut body = format!("▶ **{current}**（再生中）");
+    // 位置が取れないとき（曲の入れ替わりの瞬間など）はバーを省く。
+    if let Some(now) = ctx.data().music.now_playing(guild_id).await {
+        body.push('\n');
+        body.push_str(&crate::music::progress_bar(now.position, now.duration));
+    }
     for (index, title) in waiting.iter().take(QUEUE_LIMIT).enumerate() {
         body.push_str(&format!("\n{}. {title}", index + 2));
     }
