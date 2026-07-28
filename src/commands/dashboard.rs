@@ -129,7 +129,7 @@ async fn follow(
         }
 
         let edit = serenity::EditMessage::new()
-            .content(view.content.clone())
+            .embed(view.embed())
             .components(view.components);
         if let Err(error) = channel.edit_message(&panel.http, message, edit).await {
             // パネルが消された、権限が無い、など。追い掛け続けても直らない。
@@ -158,7 +158,7 @@ pub async fn dashboard(ctx: Context<'_>) -> Result<(), Error> {
     let handle = ctx
         .send(
             poise::CreateReply::default()
-                .content(view.content)
+                .embed(view.embed())
                 .components(view.components),
         )
         .await?;
@@ -209,7 +209,7 @@ pub async fn handle_component(
         // ack 済みなので UpdateMessage は使えない。メッセージを直接編集する。
         let view = render(&panel, guild_id).await;
         let edit = serenity::EditMessage::new()
-            .content(view.content)
+            .embed(view.embed())
             .components(view.components);
         if let Err(error) = interaction
             .channel_id
@@ -241,7 +241,7 @@ pub async fn handle_component(
         let view = render(&panel, guild_id).await;
         let response = serenity::CreateInteractionResponse::UpdateMessage(
             serenity::CreateInteractionResponseMessage::new()
-                .content(view.content)
+                .embed(view.embed())
                 .components(view.components),
         );
         if let Err(error) = interaction.create_response(&ctx.http, response).await {
@@ -276,6 +276,25 @@ struct View {
     components: Vec<serenity::CreateActionRow>,
     /// 何か流れているか。タスクをいつ畳むかの判断だけに使う。
     playing: bool,
+    /// 一時停止中かどうか。埋め込みの色分けにだけ使う。
+    paused: bool,
+}
+
+impl View {
+    /// 差分判定用の `content` から埋め込みを作る。
+    fn embed(&self) -> serenity::CreateEmbed {
+        let color = if !self.playing {
+            serenity::Colour::LIGHTER_GREY
+        } else if self.paused {
+            serenity::Colour::GOLD
+        } else {
+            serenity::Colour::BLURPLE
+        };
+        serenity::CreateEmbed::new()
+            .title("🎵 音楽コントロール")
+            .description(self.content.clone())
+            .color(color)
+    }
 }
 
 /// 今の状態から本文とボタンを作る。押されるたび・5 秒ごとに作り直す。
@@ -291,7 +310,7 @@ async fn render(panel: &PanelCtx, guild_id: serenity::GuildId) -> View {
     let paused = now.as_ref().is_some_and(|now| now.paused);
 
     let content = match &now {
-        None => "**音楽コントロール**\n再生していません。`/play` で追加してください。".to_owned(),
+        None => "再生していません。`/play` で追加してください。".to_owned(),
         Some(now) => {
             let state = if now.paused {
                 "⏸ 一時停止中"
@@ -299,7 +318,7 @@ async fn render(panel: &PanelCtx, guild_id: serenity::GuildId) -> View {
                 "▶ 再生中"
             };
             let mut body = format!(
-                "**音楽コントロール**（音量 {percent}%）\n{state}: **{}**\n{}",
+                "（音量 {percent}%）\n{state}: **{}**\n{}",
                 now.track.link(),
                 music::progress_bar(now.position, now.duration),
             );
@@ -350,5 +369,6 @@ async fn render(panel: &PanelCtx, guild_id: serenity::GuildId) -> View {
         content,
         components: vec![seeking, queueing],
         playing: now.is_some(),
+        paused,
     }
 }

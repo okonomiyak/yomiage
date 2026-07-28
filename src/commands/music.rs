@@ -1,6 +1,7 @@
 //! 音楽再生のコマンド。読み上げに被せて流す。キューは songbird に任せている。
 
 use anyhow::anyhow;
+use poise::serenity_prelude as serenity;
 
 use crate::{Context, Error};
 
@@ -45,16 +46,20 @@ pub async fn play(
     match ctx.data().music.enqueue(guild_id, query, volume).await {
         Ok(queued) => {
             let percent = (volume * 100.0).round() as u32;
-            let link = queued.track.link();
-            let message = if queued.position <= 1 {
-                format!("再生します: **{link}**（音量 {percent}%）")
+            let embed = if queued.position <= 1 {
+                serenity::CreateEmbed::new()
+                    .title("▶ 再生します")
+                    .description(queued.track.link())
+                    .color(serenity::Colour::BLURPLE)
+                    .field("音量", format!("{percent}%"), true)
             } else {
-                format!(
-                    "キューに追加しました（{} 番目）: **{link}**",
-                    queued.position
-                )
+                serenity::CreateEmbed::new()
+                    .title("＋ キューに追加しました")
+                    .description(queued.track.link())
+                    .color(serenity::Colour::BLURPLE)
+                    .field("順番", format!("{} 番目", queued.position), true)
             };
-            ctx.say(message).await?;
+            ctx.send(poise::CreateReply::default().embed(embed)).await?;
         }
         Err(error) => {
             tracing::warn!(%guild_id, %error, "failed to queue music");
@@ -90,7 +95,11 @@ pub async fn queue(ctx: Context<'_>) -> Result<(), Error> {
         body.push_str(&format!("\n…ほか {} 件", waiting.len() - QUEUE_LIMIT));
     }
 
-    ctx.say(body).await?;
+    let embed = serenity::CreateEmbed::new()
+        .title("🎵 キュー")
+        .description(body)
+        .color(serenity::Colour::BLURPLE);
+    ctx.send(poise::CreateReply::default().embed(embed)).await?;
     Ok(())
 }
 

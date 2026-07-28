@@ -1,5 +1,7 @@
 //! クレジット表記（PLAN §12）。VOICEVOX の利用規約上、表記は必須。
 
+use poise::serenity_prelude as serenity;
+
 use crate::{Context, Error};
 
 /// この Bot について（音声合成のクレジット）。
@@ -19,19 +21,25 @@ pub async fn about(ctx: Context<'_>) -> Result<(), Error> {
         Err(_) => "（取得できませんでした）".to_owned(),
     };
 
-    ctx.say(format!(
-        "**yomiage-bot** — Discord のテキストチャンネルを読み上げる Bot\n\
-         \n\
-         音声合成: **VOICEVOX**\n\
-         <https://voicevox.hiroshiba.jp/>\n\
-         \n\
-         あなたが使用中の音声ライブラリ: **{style}**\n\
-         生成された音声を公開・配布する場合は、**「VOICEVOX:（キャラクター名）」**\
-         のクレジット表記と、各キャラクターの利用規約の確認が必要です。\n\
-         <https://voicevox.hiroshiba.jp/term/>\n\
-         \n\
-         ソース: <https://github.com/okonomiyak/yomiage>"
-    ))
-    .await?;
+    let embed = serenity::CreateEmbed::new()
+        .title("yomiage-bot")
+        .description("Discord のテキストチャンネルを読み上げる Bot")
+        .color(serenity::Colour::BLURPLE)
+        .field(
+            "音声合成",
+            "**VOICEVOX**\n<https://voicevox.hiroshiba.jp/>",
+            false,
+        )
+        .field("あなたが使用中の音声ライブラリ", style, true)
+        .field(
+            "クレジット表記について",
+            "生成された音声を公開・配布する場合は、**「VOICEVOX:（キャラクター名）」**\
+             のクレジット表記と、各キャラクターの利用規約の確認が必要です。\n\
+             <https://voicevox.hiroshiba.jp/term/>",
+            false,
+        )
+        .field("ソース", "<https://github.com/okonomiyak/yomiage>", false);
+
+    ctx.send(poise::CreateReply::default().embed(embed)).await?;
     Ok(())
 }
