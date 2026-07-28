@@ -18,7 +18,7 @@ pub struct StyleChoice {
     pub id: u32,
 }
 
-async fn autocomplete_style<'a>(
+pub(crate) async fn autocomplete_style<'a>(
     ctx: Context<'a>,
     partial: &'a str,
 ) -> impl Iterator<Item = serenity::AutocompleteChoice> + 'a {
@@ -172,9 +172,11 @@ pub enum Feature {
     Tts,
     #[name = "音楽"]
     Music,
+    #[name = "時報"]
+    TimeSignal,
 }
 
-/// 読み上げ／音楽を個別に有効・無効にする（サーバー単位）。
+/// 読み上げ／音楽／時報を個別に有効・無効にする（サーバー単位）。
 #[poise::command(slash_command, guild_only)]
 pub async fn feature(
     ctx: Context<'_>,
@@ -202,6 +204,10 @@ pub async fn feature(
                 data.music.stop(guild_id).await;
             }
             "音楽"
+        }
+        Feature::TimeSignal => {
+            data.db.set_time_signal_enabled(guild_id, enabled).await?;
+            "時報"
         }
     };
 
@@ -247,7 +253,8 @@ pub async fn config(ctx: Context<'_>) -> Result<(), Error> {
 
     ctx.say(format!(
         "**サーバー設定**\n\
-         機能: 読み上げ {} / 音楽 {}\n\
+         機能: 読み上げ {} / 音楽 {} / 時報 {}\n\
+         時報: {}分おき・話者 {}\n\
          読み上げ中: {channel_list}\n\
          紐づけ:\n{binding_list}\n\
          文字数上限: {} 文字\n\
@@ -267,6 +274,13 @@ pub async fn config(ctx: Context<'_>) -> Result<(), Error> {
         } else {
             "無効"
         },
+        if settings.time_signal_enabled {
+            "有効"
+        } else {
+            "無効"
+        },
+        settings.time_signal_interval,
+        style_label(ctx, settings.time_signal_style),
         settings.max_length,
         if settings.read_bots {
             "読む"
@@ -284,7 +298,7 @@ pub async fn config(ctx: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
-fn style_label(ctx: Context<'_>, id: u32) -> String {
+pub(crate) fn style_label(ctx: Context<'_>, id: u32) -> String {
     ctx.data()
         .styles
         .iter()

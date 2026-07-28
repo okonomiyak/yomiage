@@ -4,6 +4,7 @@ mod dict;
 mod help;
 pub mod music;
 pub mod settings;
+mod timesignal;
 mod voice;
 
 use crate::{Data, Error};
@@ -32,5 +33,6 @@ pub fn all() -> Vec<poise::Command<Data, Error>> {
         music::stop(),
         music::volume(),
         dashboard::dashboard(),
+        timesignal::timesignal(),
     ]
 }

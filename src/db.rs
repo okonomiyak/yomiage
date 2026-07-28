@@ -22,6 +22,12 @@ pub struct GuildSettings {
     pub music_volume: f32,
     pub tts_enabled: bool,
     pub music_enabled: bool,
+    /// 時報を読むか。既存サーバーが突然喋り出さないよう既定は無効。
+    pub time_signal_enabled: bool,
+    /// 時報の頻度（分）。30 か 60 を想定。
+    pub time_signal_interval: u32,
+    /// 時報を読む話者のスタイル ID。
+    pub time_signal_style: u32,
 }
 
 impl Default for GuildSettings {
@@ -33,6 +39,9 @@ impl Default for GuildSettings {
             music_volume: 0.3,
             tts_enabled: true,
             music_enabled: true,
+            time_signal_enabled: false,
+            time_signal_interval: 60,
+            time_signal_style: crate::voicevox::DEFAULT_STYLE.0,
         }
     }
 }
@@ -234,7 +243,8 @@ impl Db {
     /// 行が無ければ既定値を返す。`/join` した時点では行を作らない。
     pub async fn guild_settings(&self, guild_id: GuildId) -> anyhow::Result<GuildSettings> {
         let row = sqlx::query(
-            "SELECT max_length, read_bots, ignore_prefix, music_volume, tts_enabled, music_enabled
+            "SELECT max_length, read_bots, ignore_prefix, music_volume, tts_enabled, music_enabled,
+                    time_signal_enabled, time_signal_interval, time_signal_style
              FROM guild_settings WHERE guild_id = ?",
         )
         .bind(id(guild_id.get()))
@@ -251,6 +261,9 @@ impl Db {
             music_volume: row.try_get::<f64, _>("music_volume")? as f32,
             tts_enabled: row.try_get::<i64, _>("tts_enabled")? != 0,
             music_enabled: row.try_get::<i64, _>("music_enabled")? != 0,
+            time_signal_enabled: row.try_get::<i64, _>("time_signal_enabled")? != 0,
+            time_signal_interval: row.try_get::<i64, _>("time_signal_interval")?.max(1) as u32,
+            time_signal_style: row.try_get::<i64, _>("time_signal_style")?.max(0) as u32,
         })
     }
 
@@ -296,6 +309,43 @@ impl Db {
         )
         .bind(id(guild_id.get()))
         .bind(f64::from(volume))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn set_time_signal_enabled(&self, guild_id: GuildId, on: bool) -> anyhow::Result<()> {
+        self.set_feature(guild_id, "time_signal_enabled", on).await
+    }
+
+    /// 頻度（分）。`/timesignal interval` から 30 か 60 のみが渡る。
+    pub async fn set_time_signal_interval(
+        &self,
+        guild_id: GuildId,
+        minutes: u32,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO guild_settings (guild_id, time_signal_interval) VALUES (?, ?)
+             ON CONFLICT (guild_id) DO UPDATE SET time_signal_interval = excluded.time_signal_interval",
+        )
+        .bind(id(guild_id.get()))
+        .bind(i64::from(minutes))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn set_time_signal_style(
+        &self,
+        guild_id: GuildId,
+        style: StyleId,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO guild_settings (guild_id, time_signal_style) VALUES (?, ?)
+             ON CONFLICT (guild_id) DO UPDATE SET time_signal_style = excluded.time_signal_style",
+        )
+        .bind(id(guild_id.get()))
+        .bind(i64::from(style.0))
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -568,6 +618,36 @@ mod tests {
             db.guild_settings(guild).await.expect("失敗").max_length,
             100
         );
+    }
+
+    #[tokio::test]
+    async fn time_signal_defaults_to_disabled_hourly_default_style() {
+        let db = memory_db().await;
+        let settings = db.guild_settings(GuildId::new(1)).await.expect("失敗");
+
+        assert!(!settings.time_signal_enabled);
+        assert_eq!(settings.time_signal_interval, 60);
+        assert_eq!(settings.time_signal_style, StyleId(3).0);
+    }
+
+    #[tokio::test]
+    async fn time_signal_settings_round_trip_independently() {
+        let db = memory_db().await;
+        let guild = GuildId::new(1);
+
+        db.set_time_signal_enabled(guild, true).await.expect("失敗");
+        db.set_time_signal_interval(guild, 30).await.expect("失敗");
+        db.set_time_signal_style(guild, StyleId(14))
+            .await
+            .expect("失敗");
+
+        let settings = db.guild_settings(guild).await.expect("失敗");
+        assert!(settings.time_signal_enabled);
+        assert_eq!(settings.time_signal_interval, 30);
+        assert_eq!(settings.time_signal_style, 14);
+        // 他の設定は既定値のまま。
+        assert_eq!(settings.max_length, 100);
+        assert!(settings.tts_enabled);
     }
 
     #[tokio::test]

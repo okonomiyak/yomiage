@@ -1,48 +1,72 @@
 //! 使い方の表示。返信は ephemeral（実行者にだけ見える）にして、
 //! チャンネルを長文で流さないようにする。
 
+use poise::serenity_prelude as serenity;
+
 use crate::{Context, Error};
 
 /// 使い方を表示する（自分にだけ見えます）。
 #[poise::command(slash_command)]
 pub async fn help(ctx: Context<'_>) -> Result<(), Error> {
-    let body = "\
-**読み上げ**
+    let embed = serenity::CreateEmbed::new()
+        .title("使い方")
+        .color(serenity::Colour::BLURPLE)
+        .field(
+            "読み上げ",
+            "\
 `/join` … 参加中の VC に接続して、このチャンネルの発言を読み上げる
 `/leave` … 切断してキューを捨てる
 `/bind <テキストch> <ボイスch>` … 聞き専チャンネルなどを VC に紐づける（保存される）
 `/unbind <テキストch>` … 紐づけを解除する
-`/skip` … 今読んでいる 1 件を飛ばす
-
-**自分の声**（どのサーバーでも共通）
+`/skip` … 今読んでいる 1 件を飛ばす",
+            false,
+        )
+        .field(
+            "自分の声（どのサーバーでも共通）",
+            "\
 `/voice <話者>` … 話者を変える。名前が候補に出ないときはスタイル ID（例: `14`）でも探せる
-`/speed` `/pitch` `/intonation` … 速さ 0.5〜2.0 / 高さ -0.15〜0.15 / 抑揚 0.0〜2.0
-
-**音楽**
+`/speed` `/pitch` `/intonation` … 速さ 0.5〜2.0 / 高さ -0.15〜0.15 / 抑揚 0.0〜2.0",
+            false,
+        )
+        .field(
+            "音楽",
+            "\
 `/play <URL または検索語>` … キューに積む。空いていればすぐ流す
 　（YouTube とニコニコ動画の URL に対応。検索語のときは YouTube から探す）
 `/queue` … 再生中と待機中を見る
 `/next` … 次の曲へ / `/stop` … 止めてキューを空にする
 `/volume <0-100>` … 音量（サーバー単位）
 `/dashboard` … シークバー付きの操作パネルを出す。⏪ ⏩ で 10 秒／60 秒ずつ動かせる
-　（バーは 5 秒ごとに自動で進む。しばらく何も流れないと止まるが、ボタンを押せば再開する）
-
-**サーバー設定**
-`/feature <機能> <有効/無効>` … 読み上げと音楽を個別に on/off
+　（バーは 5 秒ごとに自動で進む。しばらく何も流れないと止まるが、ボタンを押せば再開する）",
+            false,
+        )
+        .field(
+            "サーバー設定",
+            "\
+`/feature <機能> <有効/無効>` … 読み上げ・音楽・時報を個別に on/off
 `/maxlength <文字数>` … 1 発言で読む上限（1〜500、既定 100）
 `/dict add <表記> <読み>` / `/dict list` / `/dict remove` … サーバー辞書
+`/timesignal interval <頻度>` … 時報の頻度（毎正時／30分おき、既定 毎正時）
+`/timesignal voice <話者>` … 時報を読む話者
 `/config` … 今の設定を表示
-`/about` … クレジット表記
-
-**読み上げないもの**
-・`;` で始まる発言　・Bot の発言　・URL やコードブロックは「URL省略」「コード省略」に置き換え
-
-**覚えておくと楽なこと**
+`/about` … クレジット表記",
+            false,
+        )
+        .field(
+            "読み上げないもの",
+            "・`;` で始まる発言　・Bot の発言　・URL やコードブロックは「URL省略」「コード省略」に置き換え",
+            false,
+        )
+        .field(
+            "覚えておくと楽なこと",
+            "\
 ・VC から全員いなくなると自動で退出する
 ・Bot を再起動すると VC から抜けるので `/join` からやり直す（`/bind` と声の設定は残る）
-・長い発言ほど読み始めるまで待つ（上限付近だと数秒かかる）";
+・長い発言ほど読み始めるまで待つ（上限付近だと数秒かかる）",
+            false,
+        );
 
-    ctx.send(poise::CreateReply::default().content(body).ephemeral(true))
+    ctx.send(poise::CreateReply::default().embed(embed).ephemeral(true))
         .await?;
     Ok(())
 }

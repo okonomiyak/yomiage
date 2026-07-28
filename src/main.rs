@@ -5,6 +5,7 @@ mod music;
 mod nicovideo;
 mod speech;
 mod text;
+mod timesignal;
 mod voicevox;
 
 use std::sync::Arc;
@@ -455,15 +456,20 @@ async fn main() -> anyhow::Result<()> {
 
                     let styles = warm_up(&engine).await;
 
+                    let speech = Arc::new(speech::Manager::new(
+                        engine,
+                        songbird.clone(),
+                        ctx.http.clone(),
+                    ));
+                    let music = Arc::new(music::Manager::new(songbird, reqwest::Client::new()));
+
+                    tokio::spawn(timesignal::run(database.clone(), speech.clone()));
+
                     Ok(Data {
                         db: database,
                         exvoice,
-                        speech: Arc::new(speech::Manager::new(
-                            engine,
-                            songbird.clone(),
-                            ctx.http.clone(),
-                        )),
-                        music: Arc::new(music::Manager::new(songbird, reqwest::Client::new())),
+                        speech,
+                        music,
                         panels: Arc::default(),
                         styles,
                     })
