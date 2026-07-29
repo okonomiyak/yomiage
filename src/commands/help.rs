@@ -18,7 +18,8 @@ pub async fn help(ctx: Context<'_>) -> Result<(), Error> {
 `/leave` … 切断してキューを捨てる
 `/bind <テキストch> <ボイスch>` … 聞き専チャンネルなどを VC に紐づける（保存される）
 `/unbind <テキストch>` … 紐づけを解除する
-`/skip` … 今読んでいる 1 件を飛ばす",
+`/skip` … 今読んでいる 1 件を飛ばす
+`/stats` … 読み上げ文字数を見る（サーバー合計・ユーザー別、当日と累計）",
             false,
         )
         .field(

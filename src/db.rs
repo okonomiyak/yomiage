@@ -496,6 +496,59 @@ impl Db {
         Ok(result.rows_affected() > 0)
     }
 
+    // ---- 読み上げ統計（/stats）。文字数のみ、サーバー×ユーザー単位 ----
+
+    /// 読み上げた文字数を積む。`day` を跨いでいたら当日分は積み直し、累計にはそのまま足す。
+    pub async fn record_speech_chars(
+        &self,
+        guild_id: GuildId,
+        user_id: UserId,
+        day: i64,
+        chars: i64,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO speech_stats (guild_id, user_id, day, today_chars, total_chars)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT (guild_id, user_id) DO UPDATE SET
+                 today_chars = CASE WHEN day = excluded.day
+                                    THEN today_chars + excluded.today_chars
+                                    ELSE excluded.today_chars END,
+                 day = excluded.day,
+                 total_chars = total_chars + excluded.total_chars",
+        )
+        .bind(id(guild_id.get()))
+        .bind(id(user_id.get()))
+        .bind(day)
+        .bind(chars)
+        .bind(chars)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// (user_id, 当日の文字数, 累計文字数)。`day` と一致しない行は当日分を 0 として扱う
+    /// （今日はまだ何も読んでいないユーザーの古い値をそのまま出さないため）。
+    pub async fn speech_stats(
+        &self,
+        guild_id: GuildId,
+        day: i64,
+    ) -> anyhow::Result<Vec<(UserId, i64, i64)>> {
+        let rows: Vec<(i64, i64, i64)> = sqlx::query_as(
+            "SELECT user_id,
+                    CASE WHEN day = ?2 THEN today_chars ELSE 0 END,
+                    total_chars
+             FROM speech_stats WHERE guild_id = ?1",
+        )
+        .bind(id(guild_id.get()))
+        .bind(day)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(user_id, today, total)| (UserId::new(user_id as u64), today, total))
+            .collect())
+    }
+
     /// 列名は呼び出し側の固定文字列のみ（外部入力を混ぜない）。
     async fn upsert_voice(&self, user_id: UserId, column: &str, value: f64) -> anyhow::Result<()> {
         let sql = format!(
@@ -650,6 +703,50 @@ mod tests {
         assert!(db.remove_playlist_entry(guild, "定番").await.expect("失敗"));
         assert!(!db.remove_playlist_entry(guild, "定番").await.expect("失敗"));
         assert!(db.playlist(guild).await.expect("失敗").is_empty());
+    }
+
+    #[tokio::test]
+    async fn speech_stats_accumulate_within_the_same_day() {
+        let db = memory_db().await;
+        let guild = GuildId::new(1);
+        let user = UserId::new(100);
+
+        db.record_speech_chars(guild, user, 19_000, 10)
+            .await
+            .expect("失敗");
+        db.record_speech_chars(guild, user, 19_000, 5)
+            .await
+            .expect("失敗");
+
+        assert_eq!(
+            db.speech_stats(guild, 19_000).await.expect("失敗"),
+            vec![(user, 15, 15)]
+        );
+    }
+
+    #[tokio::test]
+    async fn speech_stats_reset_today_chars_on_day_rollover() {
+        let db = memory_db().await;
+        let guild = GuildId::new(1);
+        let user = UserId::new(100);
+
+        db.record_speech_chars(guild, user, 19_000, 10)
+            .await
+            .expect("失敗");
+        db.record_speech_chars(guild, user, 19_001, 3)
+            .await
+            .expect("失敗");
+
+        // 当日分は新しい日の値に積み直される。累計はそのまま足される。
+        assert_eq!(
+            db.speech_stats(guild, 19_001).await.expect("失敗"),
+            vec![(user, 3, 13)]
+        );
+        // 別の day で問い合わせると、記録されている day と一致しないので当日分は 0 に見える。
+        assert_eq!(
+            db.speech_stats(guild, 19_000).await.expect("失敗"),
+            vec![(user, 0, 13)]
+        );
     }
 
     #[tokio::test]

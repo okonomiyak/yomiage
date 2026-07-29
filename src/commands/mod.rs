@@ -5,6 +5,7 @@ mod help;
 pub mod music;
 mod playlist;
 pub mod settings;
+mod stats;
 mod timesignal;
 mod voice;
 
@@ -36,5 +37,6 @@ pub fn all() -> Vec<poise::Command<Data, Error>> {
         playlist::playlist(),
         dashboard::dashboard(),
         timesignal::timesignal(),
+        stats::stats(),
     ]
 }

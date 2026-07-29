@@ -24,6 +24,12 @@ fn jst_hour_minute(unix_secs: i64) -> (u32, u32) {
     ((day_secs / 3600) as u32, (day_secs % 3600 / 60) as u32)
 }
 
+/// UNIX 秒から JST の「エポック日数」を取り出す。日をまたいだかの比較にだけ使うので
+/// 見た目の日付（年月日）には変換しない（`/stats` の当日集計で使う）。
+pub(crate) fn jst_day(unix_secs: i64) -> i64 {
+    (unix_secs + JST_OFFSET_SECS).div_euclid(86_400)
+}
+
 /// この分が指定した頻度（30 か 60 分）の境界か。
 fn is_boundary(minute: u32, interval_minutes: u32) -> bool {
     interval_minutes > 0 && minute.is_multiple_of(interval_minutes)
@@ -112,6 +118,14 @@ mod tests {
     fn minute_wraps_around_midnight() {
         // UTC 15:00 = JST 翌日 00:00。
         assert_eq!(jst_hour_minute(1_767_279_600), (0, 0));
+    }
+
+    #[test]
+    fn jst_day_advances_at_jst_midnight_not_utc_midnight() {
+        // UTC 14:59 はまだ JST 同日、UTC 15:00 で JST の日付が進む。
+        let before = jst_day(1_767_279_599);
+        let after = jst_day(1_767_279_600);
+        assert_eq!(after, before + 1);
     }
 
     #[test]

@@ -30,11 +30,11 @@ Discord のテキストチャンネルの発言を VOICEVOX で読み上げる B
 ロードマップ（PLAN §11）のフェーズ 0〜5 はすべて実装済み。フェーズ 5 のうち
 **Proxmox のスナップショット定期取得と vzdump 連携だけ未着手**。
 
-コマンドは 23 個。グローバル登録（全サーバーで使える）。
+コマンドは 24 個。グローバル登録（全サーバーで使える）。
 
 | 分類 | コマンド |
 | --- | --- |
-| 読み上げ | `/join` `/leave` `/bind` `/unbind` `/skip` |
+| 読み上げ | `/join` `/leave` `/bind` `/unbind` `/skip` `/stats` |
 | 自分の声 | `/voice` `/speed` `/pitch` `/intonation` |
 | 音楽 | `/play` `/queue` `/next` `/stop` `/volume` `/dashboard` `/playlist` |
 | サーバー設定 | `/feature` `/maxlength` `/dict` `/timesignal` `/config` |
@@ -43,6 +43,8 @@ Discord のテキストチャンネルの発言を VOICEVOX で読み上げる B
 時報（`/timesignal`）は PLAN §13-9 参照。既定は無効で、`/feature` で有効にするとギルドごとの頻度（毎正時／30分おき）で Bot 接続中の VC に時刻を読み上げる。
 
 お気に入り（`/playlist`）は PLAN §13-10 参照。サーバー共有で、登録した名前と `/play` の引数が完全一致したときだけ URL に差し替える（一致しなければ従来通り URL/検索語として扱う）。
+
+読み上げ統計（`/stats`）は PLAN §13-11 参照。文字数のみをサーバー×ユーザー単位で数え、当日と累計の 2 値だけ持つ（日別の履歴は保存しない）。
 
 読み上げ以外の主な挙動:
 

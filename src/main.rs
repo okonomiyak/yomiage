@@ -329,6 +329,20 @@ async fn handle_message(ctx: &serenity::Context, message: &serenity::Message, da
         tracing::debug!(%guild_id, path = %path.display(), "playing exvoice clip");
     }
 
+    let day = timesignal::jst_day(now_unix());
+    if let Err(error) = data
+        .db
+        .record_speech_chars(
+            guild_id,
+            message.author.id,
+            day,
+            text.chars().count() as i64,
+        )
+        .await
+    {
+        tracing::warn!(%guild_id, %error, "failed to record speech stats");
+    }
+
     data.speech
         .enqueue(
             guild_id,
@@ -340,6 +354,14 @@ async fn handle_message(ctx: &serenity::Context, message: &serenity::Message, da
             },
         )
         .await;
+}
+
+/// 現在時刻の UNIX 秒。時報・統計の JST 換算に使う。
+pub(crate) fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
 }
 
 /// メンションの解決に使う名前をキャッシュから集める（PLAN §7-3）。
