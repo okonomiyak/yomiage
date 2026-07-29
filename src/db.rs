@@ -437,6 +437,65 @@ impl Db {
         Ok(result.rows_affected() > 0)
     }
 
+    // ---- お気に入り音楽（サーバー共有） ----
+
+    /// 名前 → URL。`/play <名前>` からの解決にも使う。
+    pub async fn playlist(&self, guild_id: GuildId) -> anyhow::Result<Vec<(String, String)>> {
+        let rows: Vec<(String, String)> =
+            sqlx::query_as("SELECT name, url FROM playlist WHERE guild_id = ?")
+                .bind(id(guild_id.get()))
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows)
+    }
+
+    /// 登録済みの名前と完全一致したときだけ URL を返す。
+    pub async fn playlist_url(
+        &self,
+        guild_id: GuildId,
+        name: &str,
+    ) -> anyhow::Result<Option<String>> {
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT url FROM playlist WHERE guild_id = ? AND name = ?")
+                .bind(id(guild_id.get()))
+                .bind(name)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.map(|(url,)| url))
+    }
+
+    pub async fn add_playlist_entry(
+        &self,
+        guild_id: GuildId,
+        name: &str,
+        url: &str,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO playlist (guild_id, name, url) VALUES (?, ?, ?)
+             ON CONFLICT (guild_id, name) DO UPDATE SET url = excluded.url",
+        )
+        .bind(id(guild_id.get()))
+        .bind(name)
+        .bind(url)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// 消せたら true。無かったら false。
+    pub async fn remove_playlist_entry(
+        &self,
+        guild_id: GuildId,
+        name: &str,
+    ) -> anyhow::Result<bool> {
+        let result = sqlx::query("DELETE FROM playlist WHERE guild_id = ? AND name = ?")
+            .bind(id(guild_id.get()))
+            .bind(name)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     /// 列名は呼び出し側の固定文字列のみ（外部入力を混ぜない）。
     async fn upsert_voice(&self, user_id: UserId, column: &str, value: f64) -> anyhow::Result<()> {
         let sql = format!(
@@ -556,6 +615,41 @@ mod tests {
                 .expect("失敗")
         );
         assert!(db.dictionary(guild).await.expect("失敗").is_empty());
+    }
+
+    #[tokio::test]
+    async fn playlist_entries_round_trip() {
+        let db = memory_db().await;
+        let guild = GuildId::new(1);
+
+        db.add_playlist_entry(guild, "定番", "https://example.com/a")
+            .await
+            .expect("失敗");
+        assert_eq!(
+            db.playlist(guild).await.expect("失敗"),
+            vec![("定番".to_owned(), "https://example.com/a".to_owned())]
+        );
+        assert_eq!(
+            db.playlist_url(guild, "定番").await.expect("失敗"),
+            Some("https://example.com/a".to_owned())
+        );
+        assert_eq!(
+            db.playlist_url(guild, "無い名前").await.expect("失敗"),
+            None
+        );
+
+        // 同じ名前を登録し直したら URL が上書きされる（重複行にはならない）。
+        db.add_playlist_entry(guild, "定番", "https://example.com/b")
+            .await
+            .expect("失敗");
+        assert_eq!(
+            db.playlist(guild).await.expect("失敗"),
+            vec![("定番".to_owned(), "https://example.com/b".to_owned())]
+        );
+
+        assert!(db.remove_playlist_entry(guild, "定番").await.expect("失敗"));
+        assert!(!db.remove_playlist_entry(guild, "定番").await.expect("失敗"));
+        assert!(db.playlist(guild).await.expect("失敗").is_empty());
     }
 
     #[tokio::test]

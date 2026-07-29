@@ -3,6 +3,7 @@
 use anyhow::anyhow;
 use poise::serenity_prelude as serenity;
 
+use crate::commands::playlist::autocomplete_playlist_name;
 use crate::{Context, Error};
 
 /// 音量の指定範囲（%）。100 を超えると歪むので上限にする。
@@ -15,7 +16,9 @@ const QUEUE_LIMIT: usize = 20;
 #[poise::command(slash_command, guild_only)]
 pub async fn play(
     ctx: Context<'_>,
-    #[description = "URL または検索語"] query: String,
+    #[description = "URL・検索語、または /playlist に登録した名前"]
+    #[autocomplete = "autocomplete_playlist_name"]
+    query: String,
 ) -> Result<(), Error> {
     let guild_id = ctx
         .guild_id()
@@ -32,6 +35,10 @@ pub async fn play(
         ctx.say("URL か検索語を指定してください。").await?;
         return Ok(());
     }
+
+    // 登録名と完全一致したら、その URL を使う。無ければ今まで通り URL/検索語として扱う。
+    let resolved = ctx.data().db.playlist_url(guild_id, query).await?;
+    let query = resolved.as_deref().unwrap_or(query);
 
     // yt-dlp の起動と検索で数秒かかる。3 秒以内に返せないと Discord 側が失敗扱いにする。
     ctx.defer().await?;
