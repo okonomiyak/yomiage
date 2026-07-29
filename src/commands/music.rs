@@ -59,6 +59,12 @@ pub async fn play(
         {
             Ok(result) => {
                 let mut description = format!("{} 曲をキューに追加しました。", result.queued);
+                if result.unplayable > 0 {
+                    description.push_str(&format!(
+                        "\n（再生できない動画のため {} 曲は追加していません）",
+                        result.unplayable
+                    ));
+                }
                 if result.skipped > 0 {
                     description.push_str(&format!(
                         "\n（上限 {} 曲を超えたため {} 曲は追加していません）",

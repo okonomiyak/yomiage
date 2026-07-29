@@ -98,6 +98,9 @@ pub struct PlaylistQueued {
     pub queued: usize,
     /// 上限（`PLAYLIST_LIMIT`）を超えたために積まなかった曲数。
     pub skipped: usize,
+    /// ニコニコの事前確認で再生できないと分かり、積まなかった曲数。
+    /// YouTube は事前確認しないので常に 0。
+    pub unplayable: usize,
 }
 
 /// 今流れている曲の状態。パネルの描画に要るものだけ。
@@ -359,8 +362,11 @@ impl Manager {
     /// 再生リスト（YouTube の再生リスト／ニコニコのマイリスト・シリーズ）をまとめて積む。
     ///
     /// 曲ごとのタイトル・長さは `--flat-playlist` の一覧情報だけを使う（PLAN §13-12）。
-    /// 詳細（正確な長さ・実際に再生できるか）を毎曲取りに行くと `/play` の応答が
-    /// 遅くなるため。取れなかった曲は再生時に無音のまま飛ばされることがある。
+    /// **ただしニコニコだけは例外で、曲ごとに `aux_metadata()` を叩いて再生可否を
+    /// 事前確認する**（単曲 `/play` と同じ理由）。ニコニコは会員限定・センシティブ
+    /// 指定などで実際には再生できない動画があり、無音のまま飛ばされると理由が
+    /// 誰にも伝わらないため。YouTube は今まで通り事前確認しない（`/play` の応答が
+    /// リストの曲数分遅れるのを避けるため）。
     pub async fn enqueue_playlist(
         &self,
         guild_id: GuildId,
@@ -380,24 +386,49 @@ impl Manager {
         let total = entries.len();
 
         let mut queued = 0usize;
+        let mut unplayable = 0usize;
         for entry in entries.iter().take(PLAYLIST_LIMIT) {
             let Some(track_url) = entry.resolve_url(is_nico) else {
                 tracing::warn!(%guild_id, "playlist entry has no resolvable url; skipping");
                 continue;
             };
 
-            let info = TrackInfo {
-                title: entry.title.clone().unwrap_or_else(|| track_url.clone()),
-                duration: entry
-                    .duration
-                    .filter(|value| value.is_finite() && *value >= 0.0)
-                    .map(Duration::from_secs_f64),
-                url: Some(track_url.clone()),
-            };
-            let input = if is_nico {
-                Input::Lazy(Box::new(nicovideo::NicoVideo::new(track_url)))
+            let (input, info) = if is_nico {
+                let mut source = nicovideo::NicoVideo::new(track_url.clone());
+                match source.aux_metadata().await {
+                    Ok(metadata) => {
+                        let info = TrackInfo {
+                            title: metadata
+                                .title
+                                .or_else(|| entry.title.clone())
+                                .unwrap_or_else(|| track_url.clone()),
+                            duration: metadata.duration,
+                            url: metadata.source_url.or(Some(track_url)),
+                        };
+                        (Input::Lazy(Box::new(source)), info)
+                    }
+                    Err(error) => {
+                        tracing::info!(
+                            %guild_id, %error,
+                            "nicovideo playlist entry is not playable; skipping"
+                        );
+                        unplayable += 1;
+                        continue;
+                    }
+                }
             } else {
-                Input::from(YoutubeDl::new(self.http.clone(), track_url))
+                let info = TrackInfo {
+                    title: entry.title.clone().unwrap_or_else(|| track_url.clone()),
+                    duration: entry
+                        .duration
+                        .filter(|value| value.is_finite() && *value >= 0.0)
+                        .map(Duration::from_secs_f64),
+                    url: Some(track_url.clone()),
+                };
+                (
+                    Input::from(YoutubeDl::new(self.http.clone(), track_url)),
+                    info,
+                )
             };
 
             let handle = {
@@ -411,10 +442,11 @@ impl Manager {
             queued += 1;
         }
 
-        tracing::info!(%guild_id, queued, total, "playlist queued");
+        tracing::info!(%guild_id, queued, unplayable, total, "playlist queued");
         Ok(PlaylistQueued {
             queued,
             skipped: total.saturating_sub(PLAYLIST_LIMIT),
+            unplayable,
         })
     }
 }
