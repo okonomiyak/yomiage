@@ -57,10 +57,10 @@ fn cookies() -> Option<String> {
 }
 
 /// yt-dlp に渡す使い捨ての Cookie コピー。drop で消える。
-struct CookieCopy(std::path::PathBuf);
+pub(crate) struct CookieCopy(std::path::PathBuf);
 
 impl CookieCopy {
-    fn path(&self) -> Option<&str> {
+    pub(crate) fn path(&self) -> Option<&str> {
         self.0.to_str()
     }
 }
@@ -75,6 +75,8 @@ impl Drop for CookieCopy {
     }
 }
 
+/// 再生リストの一覧取得（`music::list_playlist_entries`）でも同じ Cookie を使う。
+///
 /// 原本を複製し、使い捨てコピーのパスを返す。
 ///
 /// # 原本を直接渡してはいけない
@@ -89,7 +91,7 @@ impl Drop for CookieCopy {
 ///
 /// そこで毎回コピーを渡す。書き戻しはコピー側が受けて捨てられ、原本は無傷で残る。
 /// 呼び出しごとに別ファイルなので、同時に走っても壊し合わない。
-fn cookie_copy() -> Option<CookieCopy> {
+pub(crate) fn cookie_copy() -> Option<CookieCopy> {
     let source = cookies()?;
     let target = std::env::temp_dir().join(format!("yomiage-nico-{}.txt", Uuid::new_v4()));
     match std::fs::copy(&source, &target) {
@@ -304,7 +306,10 @@ pub fn is_nicovideo(query: &str) -> bool {
 }
 
 /// URL からホスト部分だけを小文字で取り出す。http(s) 以外は None。
-fn host_of(url: &str) -> Option<String> {
+///
+/// ニコニコ判定専用ではなく汎用の URL パースなので、`music::is_playlist_url` の
+/// YouTube / ニコニコ判定でも共有する。
+pub(crate) fn host_of(url: &str) -> Option<String> {
     let rest = url
         .strip_prefix("https://")
         .or_else(|| url.strip_prefix("http://"))?;

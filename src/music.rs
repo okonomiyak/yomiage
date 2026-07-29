@@ -8,6 +8,7 @@
 //! 直接鳴らしているのでキューには入らず、音楽とは独立して動く。
 
 use std::collections::HashMap;
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -19,7 +20,7 @@ use songbird::tracks::TrackHandle;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use crate::nicovideo;
+use crate::nicovideo::{self, CookieCopy};
 
 /// タイトルも長さも取れなかった曲の表示。
 const UNKNOWN_TITLE: &str = "（タイトル不明）";
@@ -27,6 +28,13 @@ const UNKNOWN_TITLE: &str = "（タイトル不明）";
 /// シークで曲の終端に着地しないよう手前に残す余白。
 /// 終端ちょうどへ飛ばすと、シークが終わった瞬間に曲が終わる。
 const SEEK_TAIL_MARGIN: Duration = Duration::from_secs(3);
+
+/// songbird が使うものと同じ実行ファイル名。
+const YTDLP: &str = "yt-dlp";
+
+/// 再生リストから 1 回の `/play` で積む曲数の上限（PLAN §13-12）。
+/// キューが一気に埋まらないよう、超えた分は捨てて件数だけ伝える。
+pub(crate) const PLAYLIST_LIMIT: usize = 50;
 
 pub struct Manager {
     songbird: Arc<Songbird>,
@@ -82,6 +90,14 @@ pub struct Queued {
     pub track: QueuedTrack,
     /// キューの何番目か。1 なら即再生。
     pub position: usize,
+}
+
+/// 再生リストをまとめてキューに積んだ結果。
+pub struct PlaylistQueued {
+    /// 実際に積めた曲数。
+    pub queued: usize,
+    /// 上限（`PLAYLIST_LIMIT`）を超えたために積まなかった曲数。
+    pub skipped: usize,
 }
 
 /// 今流れている曲の状態。パネルの描画に要るものだけ。
@@ -339,6 +355,156 @@ impl Manager {
             .filter(|handle| handle.set_volume(volume).is_ok())
             .count()
     }
+
+    /// 再生リスト（YouTube の再生リスト／ニコニコのマイリスト・シリーズ）をまとめて積む。
+    ///
+    /// 曲ごとのタイトル・長さは `--flat-playlist` の一覧情報だけを使う（PLAN §13-12）。
+    /// 詳細（正確な長さ・実際に再生できるか）を毎曲取りに行くと `/play` の応答が
+    /// 遅くなるため。取れなかった曲は再生時に無音のまま飛ばされることがある。
+    pub async fn enqueue_playlist(
+        &self,
+        guild_id: GuildId,
+        url: &str,
+        volume: f32,
+    ) -> anyhow::Result<PlaylistQueued> {
+        let call_lock = self
+            .songbird
+            .get(guild_id)
+            .context("ボイスチャンネルに接続していない")?;
+
+        let is_nico = nicovideo::is_nicovideo(url);
+        let entries = list_playlist_entries(url).await?;
+        if entries.is_empty() {
+            anyhow::bail!("再生リストが空か、取得できませんでした");
+        }
+        let total = entries.len();
+
+        let mut queued = 0usize;
+        for entry in entries.iter().take(PLAYLIST_LIMIT) {
+            let Some(track_url) = entry.resolve_url(is_nico) else {
+                tracing::warn!(%guild_id, "playlist entry has no resolvable url; skipping");
+                continue;
+            };
+
+            let info = TrackInfo {
+                title: entry.title.clone().unwrap_or_else(|| track_url.clone()),
+                duration: entry
+                    .duration
+                    .filter(|value| value.is_finite() && *value >= 0.0)
+                    .map(Duration::from_secs_f64),
+                url: Some(track_url.clone()),
+            };
+            let input = if is_nico {
+                Input::Lazy(Box::new(nicovideo::NicoVideo::new(track_url)))
+            } else {
+                Input::from(YoutubeDl::new(self.http.clone(), track_url))
+            };
+
+            let handle = {
+                let mut call = call_lock.lock().await;
+                call.enqueue_input(input).await
+            };
+            if let Err(error) = handle.set_volume(volume) {
+                tracing::warn!(%guild_id, %error, "failed to apply volume");
+            }
+            self.tracks.lock().await.insert(handle.uuid(), info);
+            queued += 1;
+        }
+
+        tracing::info!(%guild_id, queued, total, "playlist queued");
+        Ok(PlaylistQueued {
+            queued,
+            skipped: total.saturating_sub(PLAYLIST_LIMIT),
+        })
+    }
+}
+
+/// YouTube の再生リストページ、またはニコニコのマイリスト・シリーズの URL か。
+///
+/// **プレイリスト専用ページの URL だけを対象にする。** `watch?v=...&list=...` の
+/// ように「再生リスト内の 1 曲を再生中」の URL まで拾うと、1 曲だけのつもりで
+/// 貼った URL がリスト全体の取り込みになってしまうため。
+pub fn is_playlist_url(url: &str) -> bool {
+    let Some(host) = nicovideo::host_of(url) else {
+        return false;
+    };
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+
+    if host == "nicovideo.jp" || host.ends_with(".nicovideo.jp") {
+        return path.contains("/mylist/") || path.contains("/series/");
+    }
+    if host == "youtube.com" || host == "www.youtube.com" || host == "m.youtube.com" {
+        return path.contains("/playlist") && url.contains("list=");
+    }
+    false
+}
+
+/// `yt-dlp --flat-playlist -j` の 1 行分。yt-dlp のバージョンによって埋まる
+/// フィールドが違うので全部 `Option` にし、取れたものだけ使う。
+#[derive(serde::Deserialize)]
+struct FlatEntry {
+    title: Option<String>,
+    id: Option<String>,
+    /// フラット表示では動画 ID がそのまま入っていることがある。
+    url: Option<String>,
+    webpage_url: Option<String>,
+    /// 秒。一覧の時点で分かることがある（YouTube の一覧ページの表示など）。
+    duration: Option<f64>,
+}
+
+impl FlatEntry {
+    /// 実際に開ける URL を組み立てる。`url` / `webpage_url` が ID のみのことが
+    /// あるため、その場合は ID からプラットフォームごとの視聴 URL を組み立て直す。
+    fn resolve_url(&self, nicovideo_playlist: bool) -> Option<String> {
+        if let Some(webpage) = &self.webpage_url
+            && webpage.starts_with("http")
+        {
+            return Some(webpage.clone());
+        }
+        if let Some(url) = &self.url
+            && url.starts_with("http")
+        {
+            return Some(url.clone());
+        }
+        let id = self.id.as_deref().or(self.url.as_deref())?;
+        Some(if nicovideo_playlist {
+            format!("https://www.nicovideo.jp/watch/{id}")
+        } else {
+            format!("https://www.youtube.com/watch?v={id}")
+        })
+    }
+}
+
+/// 再生リストの中身を軽く列挙する。曲ごとの詳細は取りに行かない
+/// （`--flat-playlist` は一覧ページを読むだけで、動画自体の抽出はしない）。
+async fn list_playlist_entries(url: &str) -> anyhow::Result<Vec<FlatEntry>> {
+    let mut command = tokio::process::Command::new(YTDLP);
+    command.args(["--flat-playlist", "-j", "--no-warnings"]);
+    // ニコニコの会員限定マイリストなどは Cookie が要る。個別動画と同じ仕組みを使う。
+    let jar = nicovideo::cookie_copy();
+    if let Some(path) = jar.as_ref().and_then(CookieCopy::path) {
+        command.args(["--cookies", path]);
+    }
+    command.arg(url);
+
+    let output = command
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .context("yt-dlp の起動に失敗した")?;
+
+    if !output.status.success() {
+        let reason = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!(
+            "再生リストを取得できませんでした: {}",
+            nicovideo::readable_error(&reason)
+        );
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect())
 }
 
 /// タイトルと長さを引く。取れなくても再生は続ける（yt-dlp をもう一度叩くので失敗しうる）。
@@ -456,6 +622,99 @@ mod tests {
 
     fn secs(value: u64) -> Duration {
         Duration::from_secs(value)
+    }
+
+    fn entry(id: Option<&str>, url: Option<&str>, webpage_url: Option<&str>) -> FlatEntry {
+        FlatEntry {
+            title: None,
+            id: id.map(str::to_owned),
+            url: url.map(str::to_owned),
+            webpage_url: webpage_url.map(str::to_owned),
+            duration: None,
+        }
+    }
+
+    #[test]
+    fn youtube_playlist_pages_are_recognised() {
+        assert!(is_playlist_url(
+            "https://www.youtube.com/playlist?list=PLxxxx"
+        ));
+        assert!(is_playlist_url(
+            "https://m.youtube.com/playlist?list=PLxxxx"
+        ));
+    }
+
+    /// 再生リスト内の 1 曲を再生中の URL。これは「この曲だけ」の意図とみなす。
+    #[test]
+    fn youtube_watch_urls_with_a_list_param_are_not_playlists() {
+        assert!(!is_playlist_url(
+            "https://www.youtube.com/watch?v=abc&list=PLxxxx"
+        ));
+    }
+
+    /// youtu.be の短縮 URL は常に単曲。
+    #[test]
+    fn youtu_be_short_links_are_never_playlists() {
+        assert!(!is_playlist_url("https://youtu.be/abc?list=PLxxxx"));
+    }
+
+    #[test]
+    fn nicovideo_mylist_and_series_are_recognised() {
+        assert!(is_playlist_url("https://www.nicovideo.jp/mylist/12345"));
+        assert!(is_playlist_url("https://www.nicovideo.jp/series/12345"));
+    }
+
+    #[test]
+    fn nicovideo_watch_urls_are_not_playlists() {
+        assert!(!is_playlist_url("https://www.nicovideo.jp/watch/sm9"));
+    }
+
+    #[test]
+    fn search_terms_are_not_playlists() {
+        assert!(!is_playlist_url("プレイリスト"));
+        assert!(!is_playlist_url(""));
+    }
+
+    #[test]
+    fn resolve_url_prefers_webpage_url() {
+        let entry = entry(Some("x"), Some("y"), Some("https://example.com/w"));
+        assert_eq!(
+            entry.resolve_url(false),
+            Some("https://example.com/w".to_owned())
+        );
+    }
+
+    #[test]
+    fn resolve_url_falls_back_to_a_full_url_field() {
+        let entry = entry(Some("x"), Some("https://example.com/u"), None);
+        assert_eq!(
+            entry.resolve_url(false),
+            Some("https://example.com/u".to_owned())
+        );
+    }
+
+    #[test]
+    fn resolve_url_builds_a_youtube_watch_url_from_the_id() {
+        let entry = entry(Some("abc123"), Some("abc123"), None);
+        assert_eq!(
+            entry.resolve_url(false),
+            Some("https://www.youtube.com/watch?v=abc123".to_owned())
+        );
+    }
+
+    #[test]
+    fn resolve_url_builds_a_nicovideo_watch_url_from_the_id() {
+        let entry = entry(Some("sm9"), None, None);
+        assert_eq!(
+            entry.resolve_url(true),
+            Some("https://www.nicovideo.jp/watch/sm9".to_owned())
+        );
+    }
+
+    #[test]
+    fn resolve_url_is_none_without_any_identifier() {
+        let entry = entry(None, None, None);
+        assert_eq!(entry.resolve_url(false), None);
     }
 
     /// バーの本体（時刻より前の部分）だけ取り出す。

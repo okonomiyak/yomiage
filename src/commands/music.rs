@@ -50,6 +50,37 @@ pub async fn play(
         .await
         .map_or(0.3, |settings| settings.music_volume);
 
+    if crate::music::is_playlist_url(query) {
+        match ctx
+            .data()
+            .music
+            .enqueue_playlist(guild_id, query, volume)
+            .await
+        {
+            Ok(result) => {
+                let mut description = format!("{} 曲をキューに追加しました。", result.queued);
+                if result.skipped > 0 {
+                    description.push_str(&format!(
+                        "\n（上限 {} 曲を超えたため {} 曲は追加していません）",
+                        crate::music::PLAYLIST_LIMIT,
+                        result.skipped
+                    ));
+                }
+                let embed = serenity::CreateEmbed::new()
+                    .title("🎵 再生リストを追加しました")
+                    .description(description)
+                    .color(serenity::Colour::BLURPLE);
+                ctx.send(poise::CreateReply::default().embed(embed)).await?;
+            }
+            Err(error) => {
+                tracing::warn!(%guild_id, %error, "failed to queue playlist");
+                ctx.say(format!("再生リストを取り込めませんでした: {error}"))
+                    .await?;
+            }
+        }
+        return Ok(());
+    }
+
     match ctx.data().music.enqueue(guild_id, query, volume).await {
         Ok(queued) => {
             let percent = (volume * 100.0).round() as u32;
