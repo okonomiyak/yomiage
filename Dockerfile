@@ -35,6 +35,9 @@ RUN apt-get update \
 # 音楽再生に使う。PyInstaller ビルドなので python は要らない。
 # YouTube 側の変更で頻繁に壊れるため、あえて固定せず毎回最新を取る。
 # 再生できなくなったらイメージを作り直せば直ることが多い（yomiage rebuild）。
+# tts-bot は使わないが、イメージを 1 本にまとめているので一緒に入れておく。
 ADD --chmod=755 https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux /usr/local/bin/yt-dlp
-COPY --from=builder /app/target/release/yomiage-bot /usr/local/bin/yomiage-bot
-ENTRYPOINT ["/usr/local/bin/yomiage-bot"]
+# 読み上げ(tts-bot)と音楽(music-bot)は別プロセス・別 Discord アプリ（PLAN §13）。
+# イメージは共通で、compose の command でどちらを起動するか選ぶ。
+COPY --from=builder /app/target/release/tts-bot /usr/local/bin/tts-bot
+COPY --from=builder /app/target/release/music-bot /usr/local/bin/music-bot

@@ -4,6 +4,8 @@ Discord のテキストチャンネルの発言を [VOICEVOX](https://voicevox.h
 
 VOICEVOX ENGINE は別コンテナで動かし、HTTP API 経由で疎結合にしている。設定は SQLite に永続化する。
 
+読み上げ（tts-bot）と音楽（music-bot）は別プロセス・別 Discord アプリとして動く。同じサーバー・同じボイスチャンネルに両方を招待すると、音声が混ざって聞こえる（片方だけ再起動・停止しても、もう片方には影響しない）。
+
 ## クレジット
 
 **音声合成: [VOICEVOX](https://voicevox.hiroshiba.jp/)**
@@ -26,6 +28,8 @@ VOICEVOX ENGINE は別コンテナで動かし、HTTP API 経由で疎結合に�
 
 ## コマンド
 
+### 読み上げ Bot（tts-bot）
+
 | コマンド | 内容 |
 | --- | --- |
 | `/join` | ボイスチャンネルに接続し、読み上げを開始する |
@@ -38,16 +42,27 @@ VOICEVOX ENGINE は別コンテナで動かし、HTTP API 経由で疎結合に�
 | `/maxlength <文字数>` | 1 メッセージで読み上げる最大文字数（1〜500、サーバー単位、既定 100）|
 | `/dict add <表記> <読み>` | サーバー辞書に登録する |
 | `/dict list` `/dict remove` | 辞書の確認・削除 |
-| `/feature <機能> <有効/無効>` | 読み上げと音楽を個別に on/off する（サーバー単位）|
+| `/feature <機能> <有効/無効>` | 読み上げ・時報を個別に on/off する（サーバー単位）|
 | `/config` | サーバーの設定と自分の声を表示する |
 | `/about` | クレジット表記 |
 | `/help` | 使い方を表示（実行者にだけ見える）|
+
+### 音楽 Bot（music-bot）
+
+| コマンド | 内容 |
+| --- | --- |
+| `/join` | 実行者のいるボイスチャンネルに接続する |
+| `/leave` | 切断してキューを破棄する |
 | `/play <URL または検索語>` | yt-dlp で音楽をキューに積む（読み上げに被せて再生）。YouTube とニコニコ動画の URL に対応。検索語のときは YouTube から探す |
 | `/queue` | 再生中と待機中の曲を、再生位置つきで表示する。曲名は元のページへのリンクになる |
 | `/dashboard` | シークバー付きの操作パネルを出す（±10 秒／±60 秒・一時停止・再開・次へ・停止）|
 | `/next` | 今の曲を飛ばして次へ |
-| `/stop` | 音楽を止めてキューを空にする（読み上げは止めない）|
+| `/stop` | 音楽を止めてキューを空にする |
 | `/volume <0-100>` | 音楽の音量（サーバー単位、既定 30%）|
+| `/playlist add <名前> <URL>` | よく聴く URL を名前で登録する（サーバー共有）|
+| `/playlist list` `/playlist remove` | お気に入りの確認・削除 |
+| `/feature <有効/無効>` | 音楽機能を on/off する（サーバー単位）|
+| `/help` | 使い方を表示（実行者にだけ見える）|
 
 ### `/join` の接続先の決まり方
 
@@ -72,9 +87,12 @@ VOICEVOX ENGINE は別コンテナで動かし、HTTP API 経由で疎結合に�
 
 ### 1. Discord 側の準備
 
-[Developer Portal](https://discord.com/developers/applications) で Bot を作成し、**Bot タブで MESSAGE CONTENT INTENT を有効化する**。これを忘れるとメッセージ本文が空で届き、Gateway が close code 4014 で切断される。
+読み上げ(tts-bot)と音楽(music-bot)は別プロセス・別 Discord アプリなので、[Developer Portal](https://discord.com/developers/applications) で**アプリケーションを 2 つ**作る。
 
-必要な権限は「チャンネルを見る」「メッセージを送信」「接続」「発言」。
+- **読み上げ用**: Bot タブで **MESSAGE CONTENT INTENT を有効化する**。これを忘れるとメッセージ本文が空で届き、Gateway が close code 4014 で切断される。必要な権限は「チャンネルを見る」「メッセージを送信」「接続」「発言」。
+- **音楽用**: テキストを読まないので MESSAGE CONTENT INTENT は不要。必要な権限は「接続」「発言」。
+
+両方を同じサーバーに Bot として招待する（同じ VC に両方入って音声を混ぜる）。
 
 ### 2. 設定
 
@@ -82,7 +100,7 @@ VOICEVOX ENGINE は別コンテナで動かし、HTTP API 経由で疎結合に�
 cp .env.example .env
 ```
 
-`.env` に `DISCORD_TOKEN` を書く。`GUILD_ID` を設定すると、そのサーバーにだけコマンドを**即時登録**する（空にするとグローバル登録になり、反映に最大 1 時間かかる）。
+`.env` に `TTS_DISCORD_TOKEN`（読み上げ用）と `MUSIC_DISCORD_TOKEN`（音楽用）を書く。`GUILD_ID` を設定すると、そのサーバーにだけコマンドを**即時登録**する（空にするとグローバル登録になり、反映に最大 1 時間かかる）。
 
 #### ニコニコの会員限定動画
 
@@ -90,7 +108,7 @@ cp .env.example .env
 
 1. ブラウザの拡張（Get cookies.txt LOCALLY など）で `nicovideo.jp` の Cookie を書き出す
 2. `data/nico_cookies.txt` として置く
-3. `docker compose restart yomiage-bot`
+3. `docker compose restart music-bot`
 
 場所を変えたい場合は `.env` の `NICO_COOKIES`（コンテナ内パス）で指定する。置かなければ認証なしで動き、公開動画だけ再生できる。
 
@@ -106,7 +124,7 @@ Cookie には**アカウントのログイン状態がそのまま入ってい�
 docker compose up -d
 ```
 
-ENGINE のヘルスチェックが通ってから Bot が起動する。ログは `docker logs -f yomiage-bot`。
+ENGINE のヘルスチェックが通ってから読み上げ Bot が起動する。音楽 Bot は ENGINE に依存しない。ログは `docker logs -f yomiage-tts` / `docker logs -f yomiage-music`。
 
 ENGINE はホストにポートを公開しない（compose のネットワーク内でのみ到達可能）。手元から直接叩きたい場合は `compose.dev.yaml` を重ねる。
 
@@ -153,14 +171,14 @@ ssh root@<PVE> chmod +x /usr/local/bin/yomiage
 CT 内のコピーは `deploy.sh` が毎回更新するので、手動で入れ直す必要はない。
 
 ```sh
-yomiage status              # CT・コンテナ・ディスク・直近ログ
-yomiage logs -f             # ログを追う
-yomiage restart             # 再起動（VC から抜けてから落ちる）
-yomiage rebuild             # イメージを作り直して差し替え
-yomiage backup              # SQLite を .backup で安全に取得（14 世代保持）
-yomiage snapshot [名前]     # バックアップを取ってから LXC スナップショット
-yomiage rollback <名前>     # スナップショットに戻す（確認あり）
-yomiage prune               # 未使用イメージと古いビルドキャッシュを掃除
+yomiage status               # CT・コンテナ・ディスク・直近ログ（両方）
+yomiage logs tts -f          # 読み上げ Bot のログを追う（music も可）
+yomiage restart              # 再起動（対象省略で両方。VC から抜けてから落ちる）
+yomiage rebuild               # イメージを作り直して差し替え（対象省略で両方）
+yomiage backup               # SQLite を .backup で安全に取得（14 世代保持）
+yomiage snapshot [名前]      # バックアップを取ってから LXC スナップショット
+yomiage rollback <名前>      # スナップショットに戻す（確認あり）
+yomiage prune                # 未使用イメージと古いビルドキャッシュを掃除
 ```
 
 SQLite は稼働中にファイルをコピーすると壊れうるので、`backup` は `sqlite3 .backup` を使う（使い捨てコンテナ経由なので CT に sqlite3 を入れる必要はない）。定期実行するなら Proxmox ホストの cron に置く。
@@ -171,14 +189,18 @@ SQLite は稼働中にファイルをコピーすると壊れうるので、`bac
 
 ### 構成
 
+読み上げ(tts-bot)と音楽(music-bot)は別プロセス・別 Discord アプリ（PLAN §13）。共有ロジックは `src/lib.rs` に、各 Bot 固有のコードは `src/bin/` 以下に分かれている。
+
 ```
 src/
-  main.rs      エントリポイント、イベントハンドラ、起動処理
-  voicevox.rs  ENGINE クライアント（独自エラー型）
-  speech.rs    ギルドごとの読み上げキュー（合成タスク → 再生タスク）
-  text.rs      テキスト正規化（純粋関数）
-  db.rs        SQLite
-  commands/    スラッシュコマンド
+  lib.rs             共有ロジックの入口（tts-bot / music-bot 両方から使う）
+  voicevox.rs        ENGINE クライアント（独自エラー型）
+  speech.rs          ギルドごとの読み上げキュー（合成タスク → 再生タスク）
+  music.rs           音楽再生（yt-dlp / songbird の builtin-queue）
+  text.rs            テキスト正規化（純粋関数）
+  db.rs              SQLite（両 Bot が共有する）
+  bin/tts-bot/        読み上げ Bot（main.rs + commands/）
+  bin/music-bot/      音楽 Bot（main.rs + commands/）
 migrations/    SQLite のマイグレーション
 docs/PLAN.md   設計と決定事項
 docs/HANDOVER.md 引き継ぎ書（現状・ハマりどころ）

@@ -57,7 +57,10 @@ impl Db {
             .with_context(|| format!("DATABASE_URL が不正: {url}"))?
             .create_if_missing(true)
             // 読み書きが並行するので WAL にしておく。
-            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal);
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+            // tts-bot と music-bot が同じファイルを共有する（PLAN §13）。既定の busy
+            // timeout は 0 で、同時アクセスが "database is locked" で即座に失敗しうる。
+            .busy_timeout(std::time::Duration::from_secs(5));
 
         let pool = SqlitePoolOptions::new()
             .max_connections(4)

@@ -30,25 +30,10 @@ pub async fn help(ctx: Context<'_>) -> Result<(), Error> {
             false,
         )
         .field(
-            "音楽",
-            "\
-`/play <URL または検索語>` … キューに積む。空いていればすぐ流す
-　（YouTube とニコニコ動画の URL に対応。検索語のときは YouTube から探す）
-　（YouTube の再生リスト・ニコニコのマイリスト/シリーズの URL は、まとめて最大 50 曲キューに積む）
-`/queue` … 再生中と待機中を見る
-`/next` … 次の曲へ / `/stop` … 止めてキューを空にする
-`/volume <0-100>` … 音量（サーバー単位）
-`/dashboard` … シークバー付きの操作パネルを出す。⏪ ⏩ で 10 秒／60 秒ずつ動かせる
-　（バーは 5 秒ごとに自動で進む。しばらく何も流れないと止まるが、ボタンを押せば再開する）
-`/playlist add <名前> <URL>` … よく聴く URL を名前で登録（サーバー共有）
-`/playlist list` / `/playlist remove` … お気に入りの確認・削除
-　（登録した名前は `/play <名前>` でそのまま呼び出せる）",
-            false,
-        )
-        .field(
             "サーバー設定",
             "\
-`/feature <機能> <有効/無効>` … 読み上げ・音楽・時報を個別に on/off
+`/feature <機能> <有効/無効>` … 読み上げ・時報を個別に on/off
+　（音楽の on/off は音楽 Bot 側の `/feature` から）
 `/maxlength <文字数>` … 1 発言で読む上限（1〜500、既定 100）
 `/dict add <表記> <読み>` / `/dict list` / `/dict remove` … サーバー辞書
 `/timesignal interval <頻度>` … 時報の頻度（毎正時／30分おき、既定 毎正時）

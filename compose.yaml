@@ -14,24 +14,46 @@ services:
       retries: 3
     networks: [yomiage]
 
-  yomiage-bot:
+  # 読み上げと音楽は別プロセス・別 Discord アプリ（PLAN §13）。同じ VC に両方が
+  # 接続して音声を混ぜる。イメージは共通（Dockerfile が両方のバイナリを積む）で、
+  # command でどちらを起動するかだけ切り替える。
+  tts-bot:
     build: .
-    container_name: yomiage-bot
+    container_name: yomiage-tts
+    command: ["tts-bot"]
     restart: unless-stopped
     depends_on:
       voicevox:
         condition: service_healthy
     environment:
-      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - DISCORD_TOKEN=${TTS_DISCORD_TOKEN}
       # 同じ compose ネットワーク内なので、ENGINE をホストに公開する必要はない。
       - VOICEVOX_URL=http://voicevox:50021
       - DATABASE_URL=sqlite:/data/bot.db
-      - RUST_LOG=${RUST_LOG:-info,yomiage_bot=debug}
+      - RUST_LOG=${RUST_LOG:-info,yomiage_bot=debug,tts_bot=debug}
       # スラッシュコマンドの登録先。値があるとそのサーバーだけに即時登録される。
       # 空にするとグローバル登録になる（反映に最大 1 時間）。
       - GUILD_ID=${GUILD_ID:-}
       # 収録済み音声素材の置き場。無ければ空のまま起動し、合成のみで動く。
       - EXVOICE_DIR=/exvoice
+    volumes:
+      # data/ は tts-bot と music-bot で共有する（guild_settings・辞書・お気に入り
+      # などのスキーマが共通のため）。SQLite は WAL + busy_timeout で同時アクセスに耐える。
+      - ./data:/data
+      # 素材はリポジトリに入れない（配布物）。サーバーに直接置く。
+      - ./exVOICE:/exvoice:ro
+    networks: [yomiage]
+
+  music-bot:
+    build: .
+    container_name: yomiage-music
+    command: ["music-bot"]
+    restart: unless-stopped
+    environment:
+      - DISCORD_TOKEN=${MUSIC_DISCORD_TOKEN}
+      - DATABASE_URL=sqlite:/data/bot.db
+      - RUST_LOG=${RUST_LOG:-info,yomiage_bot=debug,music_bot=debug}
+      - GUILD_ID=${GUILD_ID:-}
       # ニコニコのログイン済み Cookie（会員限定・センシティブ指定の動画用）。
       # 置き場は data/ の中にする。専用の bind mount にすると、ファイルを
       # 置き忘れたときに Docker が**ディレクトリとして作ってしまう**ため。
@@ -40,8 +62,6 @@ services:
       - NICO_COOKIES=${NICO_COOKIES:-/data/nico_cookies.txt}
     volumes:
       - ./data:/data
-      # 素材はリポジトリに入れない（配布物）。サーバーに直接置く。
-      - ./exVOICE:/exvoice:ro
     networks: [yomiage]
 
 networks:

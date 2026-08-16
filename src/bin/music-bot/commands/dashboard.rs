@@ -17,8 +17,9 @@ use poise::serenity_prelude as serenity;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
-use crate::db::Db;
-use crate::music;
+use yomiage_bot::db::Db;
+use yomiage_bot::music;
+
 use crate::{Context, Data, Error};
 
 /// このパネルのボタンだと分かるようにする接頭辞。

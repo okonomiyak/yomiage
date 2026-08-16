@@ -3,6 +3,8 @@
 use anyhow::anyhow;
 use poise::serenity_prelude as serenity;
 
+use yomiage_bot::music;
+
 use crate::commands::playlist::autocomplete_playlist_name;
 use crate::{Context, Error};
 
@@ -50,7 +52,7 @@ pub async fn play(
         .await
         .map_or(0.3, |settings| settings.music_volume);
 
-    if crate::music::is_playlist_url(query) {
+    if music::is_playlist_url(query) {
         match ctx
             .data()
             .music
@@ -68,7 +70,7 @@ pub async fn play(
                 if result.skipped > 0 {
                     description.push_str(&format!(
                         "\n（上限 {} 曲を超えたため {} 曲は追加していません）",
-                        crate::music::PLAYLIST_LIMIT,
+                        music::PLAYLIST_LIMIT,
                         result.skipped
                     ));
                 }
@@ -130,7 +132,7 @@ pub async fn queue(ctx: Context<'_>) -> Result<(), Error> {
     // 位置が取れないとき（曲の入れ替わりの瞬間など）はバーを省く。
     if let Some(now) = ctx.data().music.now_playing(guild_id).await {
         body.push('\n');
-        body.push_str(&crate::music::progress_bar(now.position, now.duration));
+        body.push_str(&music::progress_bar(now.position, now.duration));
     }
     for (index, track) in waiting.iter().take(QUEUE_LIMIT).enumerate() {
         body.push_str(&format!("\n{}. {}", index + 2, track.link()));

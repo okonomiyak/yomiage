@@ -2,7 +2,8 @@
 
 use poise::serenity_prelude as serenity;
 
-use crate::voicevox::{INTONATION_RANGE, PITCH_RANGE, SPEED_RANGE, StyleId};
+use yomiage_bot::voicevox::{INTONATION_RANGE, PITCH_RANGE, SPEED_RANGE, StyleId};
+
 use crate::{Context, Error};
 
 /// Discord のオートコンプリートは 25 件まで。
@@ -165,18 +166,16 @@ pub async fn maxlength(
     Ok(())
 }
 
-/// 切り替えられる機能。
+/// 切り替えられる機能。音楽は music-bot 側の `/feature` が持つ（PLAN §13）。
 #[derive(Debug, poise::ChoiceParameter)]
 pub enum Feature {
     #[name = "読み上げ"]
     Tts,
-    #[name = "音楽"]
-    Music,
     #[name = "時報"]
     TimeSignal,
 }
 
-/// 読み上げ／音楽／時報を個別に有効・無効にする（サーバー単位）。
+/// 読み上げ／時報を個別に有効・無効にする（サーバー単位）。
 #[poise::command(slash_command, guild_only)]
 pub async fn feature(
     ctx: Context<'_>,
@@ -197,13 +196,6 @@ pub async fn feature(
                 data.speech.stop(guild_id).await;
             }
             "読み上げ"
-        }
-        Feature::Music => {
-            data.db.set_music_enabled(guild_id, enabled).await?;
-            if !enabled {
-                data.music.stop(guild_id).await;
-            }
-            "音楽"
         }
         Feature::TimeSignal => {
             data.db.set_time_signal_enabled(guild_id, enabled).await?;

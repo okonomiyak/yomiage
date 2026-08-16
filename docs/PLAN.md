@@ -75,7 +75,7 @@ Discord のボイスチャンネル参加者に対し、指定テキストチャ
 | `/skip` | 現在再生中の読み上げをスキップ |
 | `/config` | 現在のサーバー設定表示 |
 | `/maxlength <文字数>` | 読み上げ文字数の上限を変更（1〜500、サーバー単位）。実装で追加 |
-| `/feature <機能> <有効/無効>` | 読み上げ・音楽を個別に on/off（サーバー単位）。無効化時は溜まっているキューも捨てる。実装で追加 |
+| `/feature <機能> <有効/無効>` | 読み上げ・時報を個別に on/off（サーバー単位）。音楽の on/off は音楽 Bot 側の `/feature` にある（§13-13）。無効化時は溜まっているキューも捨てる。実装で追加 |
 | `/playlist add\|list\|remove` | よく聴く URL を名前で登録（サーバー共有）。`/play <名前>` で呼び出せる。実装で追加（§13-10） |
 | `/stats` | 読み上げ文字数（サーバー合計・ユーザー別、当日と累計）。実装で追加（§13-11） |
 
@@ -457,6 +457,15 @@ ssh "$PVE_HOST" "pct exec $CTID -- docker logs -f yomiage-bot"
     - **曲ごとのタイトル・長さは `--flat-playlist` の一覧情報のみを使う**。既存の単曲 `/play`（`describe()`）のように曲ごとに追加で yt-dlp を叩き直すと、大きなリストで `/play` の応答が大きく遅れるため。正確な長さは実際に再生されるときに yt-dlp が別途取得するので、`/queue` 上は取れなかった曲が「（長さ不明）」のままになることがある。
     - 一覧に出てくる `url` フィールドは動画 ID だけのことがある（yt-dlp のバージョン依存）。`id` から `https://www.youtube.com/watch?v=<id>` または `https://www.nicovideo.jp/watch/<id>` を組み立て直すフォールバックを持つ（`FlatEntry::resolve_url`）。
     - **ニコニコだけは曲ごとに `aux_metadata()` で再生可否を事前確認する**（決定 2026-07-29、実機検証後に追記）。実際にマイリストを取り込んだところ、会員限定・センシティブ指定の動画が無音のまま飛ばされ、理由がまったく伝わらなかった（`ERROR: [niconico] ...: Invalid session, re-login required` がログに出るだけで Discord 側には何も表示されない）。ニコニコは単曲 `/play` と同じ理由（メタデータ取得と実際の取得が同じ yt-dlp 呼び出しなので、ここで弾けるものは再生もできない）で事前確認を入れる。再生できない曲は件数だけ利用者に伝える（`PlaylistQueued::unplayable`）。**YouTube は今まで通り事前確認しない**（`/play` の応答がリストの曲数分遅れるのを避けるため。YouTube はニコニコほど「メタデータは引けるが実際には再生できない」ケースが多くない）。
+
+13. **決定 2026-08-16: 読み上げと音楽を別プロセス・別 Discord アプリに分離する**（利用者の要望による）。片方だけ再起動・デプロイ・障害切り分けができるようにするため。同じ VC に両方が接続して音声を混ぜる挙動（決定は 2026-07-26、§2）は変えない。
+    - **Cargo workspace は作らない**。1 パッケージのまま `src/lib.rs`（DB スキーマ・`speech`/`music` マネージャー本体など共有ロジック）+ `src/bin/tts-bot/`・`src/bin/music-bot/`（各アプリの `main.rs`・`Data`・イベントハンドラ・コマンド）という構成にした。2 つ目の `Cargo.lock` を増やすほどの理由が無く、既存の 1 リポジトリ 1 ビルドのデプロイ運用（`cargo-chef` の Dockerfile、`scripts/deploy.sh`）にも馴染むため。両バイナリとも `Cargo.toml` の依存フルセットをそのままリンクする（bin ごとの feature 分割はしない）。
+    - **DB は共有**。`data/bot.db` を両プロセスがマウントし、`guild_settings`・辞書・お気に入りなど既存のスキーマをそのまま使う。両プロセスが起動時に `sqlx::migrate!` を呼んで構わないよう、`Db::connect` の `SqliteConnectOptions` に `busy_timeout(5s)` を追加した（既定の busy timeout は 0 で、同時アクセスが "database is locked" で即座に失敗しうるため）。
+    - **`/feature` は Bot ごとに分割**。読み上げ Bot 側は `{読み上げ, 時報}` の 2 択、音楽 Bot 側は `bool` 引数のみの単独コマンド（1 択の enum は不自然なため）。
+    - **音楽 Bot に最小の `/join` `/leave` を新設**。読み上げ Bot の `/join` と違い、`/bind` のようなテキストチャンネル紐づけの概念は無く、実行者が今いる VC に接続するだけ。
+    - **音楽 Bot の Intent は最小限**（`GUILDS` + `GUILD_VOICE_STATES` のみ）。テキストを一切読まないので `MESSAGE_CONTENT` / `GUILD_MESSAGES` は付けない。
+    - **音楽 Bot の VC 自動退出はアナウンス無し**。読み上げ Bot と違い、音楽 Bot はそもそも喋る機能を持たない。
+    - デプロイは `compose.yaml` の `tts-bot` / `music-bot` サービス（同じ Dockerfile イメージ、`command` で選択）、`.env` の `TTS_DISCORD_TOKEN` / `MUSIC_DISCORD_TOKEN` に分割。`scripts/yomiage-ctl.sh` の `status`/`logs`/`restart`/`start`/`stop`/`rebuild` は対象を `tts`/`music`/省略（両方）で選べるようにした。
 
 ### 13-A 決定 3 から派生した未決事項（項目 13-1 とは別物）
 

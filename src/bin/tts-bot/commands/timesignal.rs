@@ -3,8 +3,9 @@
 
 use anyhow::anyhow;
 
+use yomiage_bot::voicevox::StyleId;
+
 use crate::commands::settings::{autocomplete_style, style_label};
-use crate::voicevox::StyleId;
 use crate::{Context, Error};
 
 /// 選べる頻度。

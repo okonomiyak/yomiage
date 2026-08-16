@@ -4,7 +4,8 @@
 #   sh scripts/deploy.sh
 #
 # 環境変数で上書きできる: PVE_HOST / CTID / DEST
-# 事前に LXC の $DEST/.env に DISCORD_TOKEN を置いておくこと（このスクリプトは触らない）。
+# 事前に LXC の $DEST/.env に TTS_DISCORD_TOKEN / MUSIC_DISCORD_TOKEN を
+# 置いておくこと（このスクリプトは触らない）。
 
 set -eu
 
@@ -32,10 +33,13 @@ git archive --format=tar HEAD | ssh "$PVE_HOST" "pct exec $CTID -- tar -x -C $DE
 ssh "$PVE_HOST" "pct exec $CTID -- install -m 755 $DEST/scripts/yomiage-ctl.sh /usr/local/bin/yomiage"
 
 echo "== ビルドと再起動"
-ssh "$PVE_HOST" "pct exec $CTID -- sh -c 'cd $DEST && docker compose up -d --build yomiage-bot'"
+# tts-bot と music-bot は同じイメージ（Dockerfile）から作るので、両方まとめて
+# 再ビルドする。voicevox は変更が無ければキャッシュがそのまま使われる。
+ssh "$PVE_HOST" "pct exec $CTID -- sh -c 'cd $DEST && docker compose up -d --build'"
 
 echo "== 状態"
 ssh "$PVE_HOST" "pct exec $CTID -- sh -c 'cd $DEST && docker compose ps'"
 
 echo
-echo "ログ: ssh $PVE_HOST \"pct exec $CTID -- docker logs -f yomiage-bot\""
+echo "ログ: ssh $PVE_HOST \"pct exec $CTID -- docker logs -f yomiage-tts\""
+echo "      ssh $PVE_HOST \"pct exec $CTID -- docker logs -f yomiage-music\""

@@ -26,7 +26,7 @@ fn jst_hour_minute(unix_secs: i64) -> (u32, u32) {
 
 /// UNIX 秒から JST の「エポック日数」を取り出す。日をまたいだかの比較にだけ使うので
 /// 見た目の日付（年月日）には変換しない（`/stats` の当日集計で使う）。
-pub(crate) fn jst_day(unix_secs: i64) -> i64 {
+pub fn jst_day(unix_secs: i64) -> i64 {
     (unix_secs + JST_OFFSET_SECS).div_euclid(86_400)
 }
 

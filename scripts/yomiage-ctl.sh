@@ -8,12 +8,12 @@
 #     ホスト: scp scripts/yomiage-ctl.sh root@<PVE>:/usr/local/bin/yomiage
 #     CT 内 : /opt/yomiage/scripts/yomiage-ctl.sh を /usr/local/bin/yomiage へコピー
 #
-#   yomiage status            状態をまとめて表示
-#   yomiage logs [行数|-f]    Bot のログ
-#   yomiage engine-logs [N]   VOICEVOX ENGINE のログ
-#   yomiage restart           Bot を再起動（VC からは自分で抜けてから落ちる）
-#   yomiage start | stop
-#   yomiage rebuild           イメージを作り直して差し替え
+#   yomiage status                 状態をまとめて表示
+#   yomiage logs [tts|music] [行数|-f]    Bot のログ（対象省略で両方）
+#   yomiage engine-logs [N]        VOICEVOX ENGINE のログ
+#   yomiage restart [tts|music]    Bot を再起動（対象省略で両方。VC からは自分で抜けてから落ちる）
+#   yomiage start | stop [tts|music]
+#   yomiage rebuild [tts|music]    イメージを作り直して差し替え（対象省略で両方）
 #   yomiage backup            SQLite を安全にバックアップ
 #   yomiage prune             未使用イメージと古いビルドキャッシュを掃除
 #   yomiage snapshot [名前]   LXC のスナップショットを取る（ホスト専用）
@@ -21,16 +21,40 @@
 #   yomiage rollback <名前>   スナップショットに戻す（ホスト専用・確認あり）
 #   yomiage shell             コンテナに入る（ホスト専用）
 #
+# 読み上げ(tts-bot)と音楽(music-bot)は別プロセス・別 Discord アプリ（PLAN §13）。
+# status/logs/restart/start/stop/rebuild は対象を省略すると両方に対して行う。
+#
 # CTID などは環境変数で上書きできる。
 
 set -eu
 
 CTID="${CTID:-110}"
 DEST="${DEST:-/opt/yomiage}"
-BOT="${BOT:-yomiage-bot}"
+BOT_TTS="${BOT_TTS:-yomiage-tts}"
+BOT_MUSIC="${BOT_MUSIC:-yomiage-music}"
 ENGINE="${ENGINE:-voicevox}"
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/yomiage}"
 KEEP_BACKUPS="${KEEP_BACKUPS:-14}"
+
+# "tts" / "music" / "" (両方) → コンテナ名（1 個 or 2 個、空白区切り）。
+bot_names() {
+    case "${1:-}" in
+        tts) echo "$BOT_TTS" ;;
+        music) echo "$BOT_MUSIC" ;;
+        '') echo "$BOT_TTS $BOT_MUSIC" ;;
+        *) die "対象は tts か music を指定する（省略で両方）。" ;;
+    esac
+}
+
+# "tts" / "music" / "" (両方) → compose のサービス名。
+service_names() {
+    case "${1:-}" in
+        tts) echo "tts-bot" ;;
+        music) echo "music-bot" ;;
+        '') echo "tts-bot music-bot" ;;
+        *) die "対象は tts か music を指定する（省略で両方）。" ;;
+    esac
+}
 
 if command -v pct >/dev/null 2>&1; then
     MODE=host
@@ -98,15 +122,38 @@ cmd_status() {
 
     echo
     echo "== 直近のログ"
-    in_ct sh -c "docker logs --tail 5 $BOT 2>&1 | grep -Ev 'serenity::|DAVE' || true"
+    for name in $(bot_names); do
+        echo "-- $name"
+        in_ct sh -c "docker logs --tail 5 $name 2>&1 | grep -Ev 'serenity::|DAVE' || true"
+    done
 }
 
 cmd_logs() {
     need_running
+    target=""
     case "${1:-}" in
-        -f | --follow) in_ct docker logs -f --tail 50 "$BOT" ;;
-        '') in_ct docker logs --tail 50 "$BOT" ;;
-        *) in_ct docker logs --tail "$1" "$BOT" ;;
+        tts | music)
+            target="$1"
+            shift
+            ;;
+    esac
+    case "${1:-}" in
+        -f | --follow)
+            [ -n "$target" ] || die "-f で追うときは対象（tts か music）を指定する。"
+            in_ct docker logs -f --tail 50 "$(bot_names "$target")"
+            ;;
+        '')
+            for name in $(bot_names "$target"); do
+                echo "== $name"
+                in_ct docker logs --tail 50 "$name"
+            done
+            ;;
+        *)
+            for name in $(bot_names "$target"); do
+                echo "== $name"
+                in_ct docker logs --tail "$1" "$name"
+            done
+            ;;
     esac
 }
 
@@ -118,25 +165,29 @@ cmd_engine_logs() {
 cmd_restart() {
     need_running
     # SIGTERM を受けると VC から抜けてから終了する。
-    in_ct docker restart "$BOT" >/dev/null
+    for name in $(bot_names "${1:-}"); do
+        in_ct docker restart "$name" >/dev/null
+    done
     echo "再起動した。読み上げ対象の登録は消えるので /join からやり直すこと。"
 }
 
 cmd_start() {
     need_running
-    compose "up -d $BOT"
+    compose "up -d $(service_names "${1:-}")"
 }
 
 cmd_stop() {
     need_running
-    in_ct docker stop "$BOT" >/dev/null
+    for name in $(bot_names "${1:-}"); do
+        in_ct docker stop "$name" >/dev/null
+    done
     echo "停止した。"
 }
 
 cmd_rebuild() {
     need_running
     echo "== イメージを作り直す（数分かかる）"
-    compose "up -d --build $BOT"
+    compose "up -d --build $(service_names "${1:-}")"
 }
 
 # SQLite は稼働中にファイルをコピーすると壊れうるので .backup を使う（PLAN §10.2）。
@@ -203,7 +254,7 @@ cmd_shell() {
 }
 
 usage() {
-    sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'
     echo "現在のモード: $MODE（host = Proxmox ホスト / ct = コンテナ内）"
 }
 

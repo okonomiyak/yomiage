@@ -1,12 +1,4 @@
 mod commands;
-mod db;
-mod exvoice;
-mod music;
-mod nicovideo;
-mod speech;
-mod text;
-mod timesignal;
-mod voicevox;
 
 use std::sync::Arc;
 
@@ -14,13 +6,13 @@ use anyhow::Context as _;
 use poise::serenity_prelude::{self as serenity};
 use songbird::SerenityInit;
 use tracing_subscriber::EnvFilter;
+use yomiage_bot::db::Db;
+use yomiage_bot::speech::{self, SpeechTask};
+use yomiage_bot::{exvoice, text, timesignal, voicevox};
 
 use crate::commands::settings::StyleChoice;
-use crate::db::Db;
-use crate::speech::SpeechTask;
 
-/// アプリ層のエラーは anyhow に寄せる（PLAN §0）。
-pub type Error = anyhow::Error;
+pub type Error = yomiage_bot::Error;
 pub type Context<'a> = poise::Context<'a, Data, Error>;
 
 pub struct Data {
@@ -28,33 +20,9 @@ pub struct Data {
     /// 収録済み音声素材。ディレクトリが無ければ空で、機能が無効になるだけ。
     pub exvoice: Arc<exvoice::Library>,
     pub speech: Arc<speech::Manager>,
-    pub music: Arc<music::Manager>,
-    /// 音楽パネルのシークバーを進めるタスク（ギルドごとに 1 本）。
-    pub panels: Arc<commands::dashboard::Panels>,
     /// `/voice` のオートコンプリート用。起動時に `/speakers` から作る（PLAN §8）。
     /// ENGINE が落ちていれば空のままにして、コマンド側で検証を諦める。
     pub styles: Vec<StyleChoice>,
-}
-
-/// コマンドが失敗しても Bot 全体は落とさない。ログに残し、実行者にだけ知らせる。
-async fn on_error(error: poise::FrameworkError<'_, Data, Error>) {
-    match error {
-        poise::FrameworkError::Setup { error, .. } => {
-            tracing::error!(?error, "framework setup failed");
-        }
-        poise::FrameworkError::Command { error, ctx, .. } => {
-            let command = ctx.command().qualified_name.clone();
-            tracing::error!(command, ?error, "command failed");
-            if let Err(e) = ctx.say("コマンドの実行に失敗しました。").await {
-                tracing::warn!(?e, "failed to report command error to user");
-            }
-        }
-        error => {
-            if let Err(e) = poise::builtins::on_error(error).await {
-                tracing::error!(?e, "error while handling error");
-            }
-        }
-    }
 }
 
 async fn event_handler(
@@ -70,12 +38,6 @@ async fn event_handler(
         }
         serenity::FullEvent::VoiceStateUpdate { old, new } => {
             handle_voice_state(ctx, old.as_ref(), new, data).await;
-        }
-        serenity::FullEvent::InteractionCreate { interaction } => {
-            // 音楽パネルのボタン。それ以外の interaction は poise が扱う。
-            if let Some(component) = interaction.as_message_component() {
-                commands::dashboard::handle_component(ctx, component, data).await;
-            }
         }
         _ => {}
     }
@@ -177,7 +139,6 @@ async fn handle_voice_state(
             tracing::warn!(%guild_id, %error, "failed to auto-leave");
         }
         data.speech.stop(guild_id).await;
-        data.music.stop(guild_id).await;
         if let Err(error) = data.db.clear_read_channels(guild_id).await {
             tracing::warn!(%guild_id, %error, "failed to clear read channels on auto-leave");
         }
@@ -276,7 +237,7 @@ async fn handle_message(ctx: &serenity::Context, message: &serenity::Message, da
         Ok(settings) => settings,
         Err(error) => {
             tracing::warn!(%guild_id, %error, "failed to load guild settings; using defaults");
-            db::GuildSettings::default()
+            yomiage_bot::db::GuildSettings::default()
         }
     };
 
@@ -412,7 +373,7 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("info,yomiage_bot=debug")),
+                .unwrap_or_else(|_| EnvFilter::new("info,yomiage_bot=debug,tts_bot=debug")),
         )
         .init();
 
@@ -462,7 +423,7 @@ async fn main() -> anyhow::Result<()> {
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
             commands: commands::all(),
-            on_error: |error| Box::pin(on_error(error)),
+            on_error: |error| Box::pin(yomiage_bot::on_error(error)),
             event_handler: |ctx, event, framework, data| {
                 Box::pin(event_handler(ctx, event, framework, data))
             },
@@ -473,7 +434,7 @@ async fn main() -> anyhow::Result<()> {
             let songbird = songbird.clone();
             move |ctx, ready, framework| {
                 Box::pin(async move {
-                    register_commands(ctx, framework.options(), &ready.guilds).await?;
+                    yomiage_bot::register_commands(ctx, framework.options(), &ready.guilds).await?;
                     tracing::info!(user = %ready.user.name, "logged in");
 
                     let styles = warm_up(&engine).await;
@@ -483,7 +444,6 @@ async fn main() -> anyhow::Result<()> {
                         songbird.clone(),
                         ctx.http.clone(),
                     ));
-                    let music = Arc::new(music::Manager::new(songbird, reqwest::Client::new()));
 
                     tokio::spawn(timesignal::run(database.clone(), speech.clone()));
 
@@ -491,8 +451,6 @@ async fn main() -> anyhow::Result<()> {
                         db: database,
                         exvoice,
                         speech,
-                        music,
-                        panels: Arc::default(),
                         styles,
                     })
                 })
@@ -510,7 +468,7 @@ async fn main() -> anyhow::Result<()> {
     // 抜けずに落ちると Discord 側にしばらく居座って見える。
     let shard_manager = client.shard_manager.clone();
     tokio::spawn(async move {
-        shutdown_signal().await;
+        yomiage_bot::shutdown_signal().await;
         tracing::info!("shutdown signal received; leaving voice channels");
 
         let guilds: Vec<_> = songbird.iter().map(|(guild_id, _)| guild_id).collect();
@@ -526,75 +484,6 @@ async fn main() -> anyhow::Result<()> {
     client.start().await.context("Discord クライアントが停止")?;
 
     Ok(())
-}
-
-/// スラッシュコマンドを登録する。
-///
-/// `GUILD_ID` があればそのサーバーだけに登録する。ギルド登録は**即時反映**なので開発中はこちら。
-/// 空ならグローバル登録で、こちらは反映に最大 1 時間かかる。
-async fn register_commands(
-    ctx: &serenity::Context,
-    options: &poise::FrameworkOptions<Data, Error>,
-    guilds: &[serenity::UnavailableGuild],
-) -> anyhow::Result<()> {
-    let guild_id = std::env::var("GUILD_ID")
-        .ok()
-        .and_then(|raw| raw.trim().parse::<u64>().ok())
-        .map(serenity::GuildId::new);
-
-    let Some(guild_id) = guild_id else {
-        poise::builtins::register_globally(ctx, &options.commands).await?;
-        // ギルド限定で登録したものが残っていると、そのサーバーだけ一覧に二重で出る。
-        // Bot が居る全ギルドを空で上書きして消す。
-        for guild in guilds {
-            if let Err(error) =
-                poise::builtins::register_in_guild(ctx, &options.commands[..0], guild.id).await
-            {
-                tracing::warn!(guild_id = %guild.id, %error, "failed to clear guild commands");
-            }
-        }
-        tracing::info!(
-            count = options.commands.len(),
-            guilds = guilds.len(),
-            "commands registered globally",
-        );
-        return Ok(());
-    };
-
-    poise::builtins::register_in_guild(ctx, &options.commands, guild_id).await?;
-    // 以前グローバルに登録したものが残っていると一覧に二重で出る。空で上書きして消す。
-    poise::builtins::register_globally(ctx, &options.commands[..0]).await?;
-    tracing::info!(
-        %guild_id,
-        count = options.commands.len(),
-        "commands registered for a single guild (instant)",
-    );
-    Ok(())
-}
-
-/// SIGTERM か Ctrl-C を待つ。SIGTERM は Unix のみ。
-async fn shutdown_signal() {
-    #[cfg(unix)]
-    {
-        use tokio::signal::unix::{SignalKind, signal};
-
-        match signal(SignalKind::terminate()) {
-            Ok(mut term) => {
-                tokio::select! {
-                    _ = term.recv() => {},
-                    _ = tokio::signal::ctrl_c() => {},
-                }
-            }
-            Err(error) => {
-                tracing::warn!(%error, "failed to listen for SIGTERM; falling back to Ctrl-C");
-                let _ = tokio::signal::ctrl_c().await;
-            }
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = tokio::signal::ctrl_c().await;
-    }
 }
 
 /// 起動時のヘルスチェック、話者一覧の取得、ウォームアップ（PLAN §7 補足 / §8）。

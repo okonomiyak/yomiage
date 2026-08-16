@@ -3,6 +3,12 @@ name = "yomiage-bot"
 version = "0.1.0"
 edition = "2024"
 
+# 読み上げ(tts-bot)と音楽(music-bot)は別プロセス・別 Discord アプリ（PLAN §13）。
+# 共有ロジックだけ lib に置き、各バイナリは src/bin/ 以下に持つ。
+[lib]
+name = "yomiage_bot"
+path = "src/lib.rs"
+
 # API 破壊が多いクレートは `=` で完全固定する（PLAN §0）。
 # 上げるときは docs.rs / examples を読み直してから上げること。
 [dependencies]

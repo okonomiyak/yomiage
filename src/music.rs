@@ -34,7 +34,7 @@ const YTDLP: &str = "yt-dlp";
 
 /// 再生リストから 1 回の `/play` で積む曲数の上限（PLAN §13-12）。
 /// キューが一気に埋まらないよう、超えた分は捨てて件数だけ伝える。
-pub(crate) const PLAYLIST_LIMIT: usize = 50;
+pub const PLAYLIST_LIMIT: usize = 50;
 
 pub struct Manager {
     songbird: Arc<Songbird>,
@@ -119,6 +119,10 @@ impl Manager {
             http,
             tracks: Mutex::new(HashMap::new()),
         }
+    }
+
+    pub fn songbird(&self) -> &Arc<Songbird> {
+        &self.songbird
     }
 
     /// URL ならそのまま、そうでなければ検索語として扱う。空きがあれば即再生、なければ待機。

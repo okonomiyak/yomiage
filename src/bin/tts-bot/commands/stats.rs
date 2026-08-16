@@ -15,7 +15,7 @@ pub async fn stats(ctx: Context<'_>) -> Result<(), Error> {
         .guild_id()
         .ok_or_else(|| anyhow!("guild_only なのに guild_id が取れない"))?;
 
-    let day = crate::timesignal::jst_day(crate::now_unix());
+    let day = yomiage_bot::timesignal::jst_day(crate::now_unix());
     let mut rows = ctx.data().db.speech_stats(guild_id, day).await?;
     if rows.is_empty() {
         ctx.say("まだ読み上げの記録がありません。").await?;

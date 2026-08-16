@@ -1,9 +1,6 @@
 mod about;
-pub mod dashboard;
 mod dict;
 mod help;
-pub mod music;
-mod playlist;
 pub mod settings;
 mod stats;
 mod timesignal;
@@ -11,7 +8,7 @@ mod voice;
 
 use crate::{Data, Error};
 
-/// フレームワークに登録するコマンド一覧。
+/// フレームワークに登録するコマンド一覧（読み上げ Bot）。
 pub fn all() -> Vec<poise::Command<Data, Error>> {
     vec![
         voice::join(),
@@ -29,13 +26,6 @@ pub fn all() -> Vec<poise::Command<Data, Error>> {
         dict::dict(),
         about::about(),
         help::help(),
-        music::play(),
-        music::queue(),
-        music::next(),
-        music::stop(),
-        music::volume(),
-        playlist::playlist(),
-        dashboard::dashboard(),
         timesignal::timesignal(),
         stats::stats(),
     ]
