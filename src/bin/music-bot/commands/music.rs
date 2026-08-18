@@ -115,6 +115,70 @@ pub async fn play(
     Ok(())
 }
 
+/// 添付した MP3 をそのままキューに積んで再生する。yt-dlp を介さないので
+/// YouTube 側の 403 などとは無関係に鳴らせる。
+#[poise::command(slash_command, guild_only)]
+pub async fn up_play(
+    ctx: Context<'_>,
+    #[description = "MP3 ファイル"] file: serenity::Attachment,
+) -> Result<(), Error> {
+    let guild_id = ctx
+        .guild_id()
+        .ok_or_else(|| anyhow!("guild_only コマンドなのに guild_id が取れない"))?;
+
+    if !enabled(ctx, guild_id).await {
+        ctx.say("音楽機能は無効です。`/feature` で有効にできます。")
+            .await?;
+        return Ok(());
+    }
+
+    let is_mp3 = file.content_type.as_deref() == Some("audio/mpeg")
+        || file.filename.to_lowercase().ends_with(".mp3");
+    if !is_mp3 {
+        ctx.say("MP3 ファイルを添付してください。").await?;
+        return Ok(());
+    }
+
+    ctx.defer().await?;
+
+    let volume = ctx
+        .data()
+        .db
+        .guild_settings(guild_id)
+        .await
+        .map_or(0.3, |settings| settings.music_volume);
+
+    match ctx
+        .data()
+        .music
+        .enqueue_upload(guild_id, &file.url, file.filename.clone(), volume)
+        .await
+    {
+        Ok(queued) => {
+            let percent = (volume * 100.0).round() as u32;
+            let embed = if queued.position <= 1 {
+                serenity::CreateEmbed::new()
+                    .title("▶ 再生します")
+                    .description(queued.track.link())
+                    .color(serenity::Colour::BLURPLE)
+                    .field("音量", format!("{percent}%"), true)
+            } else {
+                serenity::CreateEmbed::new()
+                    .title("＋ キューに追加しました")
+                    .description(queued.track.link())
+                    .color(serenity::Colour::BLURPLE)
+                    .field("順番", format!("{} 番目", queued.position), true)
+            };
+            ctx.send(poise::CreateReply::default().embed(embed)).await?;
+        }
+        Err(error) => {
+            tracing::warn!(%guild_id, %error, "failed to queue uploaded mp3");
+            ctx.say(format!("再生できませんでした: {error}")).await?;
+        }
+    }
+    Ok(())
+}
+
 /// 再生中の曲と、待っている曲を表示する。
 #[poise::command(slash_command, guild_only)]
 pub async fn queue(ctx: Context<'_>) -> Result<(), Error> {

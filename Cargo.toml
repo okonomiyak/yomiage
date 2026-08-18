@@ -55,12 +55,14 @@ serde_json = "1"
 #   wav / pcm  : VOICEVOX ENGINE が返す wav
 #   mkv        : YouTube の音声のみ形式（webm）。Opus デコーダは songbird が足す
 #   isomp4/aac : YouTube が m4a を返してきたとき用
+#   mp3        : /up_play でアップロードされた MP3 用
 symphonia = { version = "0.5.5", default-features = false, features = [
     "wav",
     "pcm",
     "mkv",
     "isomp4",
     "aac",
+    "mp3",
 ] }
 serde = { version = "1", features = ["derive"] }
 sqlx = { version = "=0.8.6", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros", "derive", "tls-none"] }

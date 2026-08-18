@@ -13,6 +13,7 @@ pub fn all() -> Vec<poise::Command<Data, Error>> {
         voice::join(),
         voice::leave(),
         music::play(),
+        music::up_play(),
         music::queue(),
         music::next(),
         music::stop(),

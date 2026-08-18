@@ -14,9 +14,9 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use poise::serenity_prelude::GuildId;
-use songbird::Songbird;
-use songbird::input::{Compose, Input, YoutubeDl};
+use songbird::input::{Compose, HttpRequest, Input, YoutubeDl};
 use songbird::tracks::TrackHandle;
+use songbird::{Call, Songbird};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -171,6 +171,47 @@ impl Manager {
             info.url = Some(query.to_owned());
         }
 
+        Ok(self
+            .queue_input(guild_id, &call_lock, input, info, volume)
+            .await)
+    }
+
+    /// アップロードされた MP3 をそのまま再生する（yt-dlp を介さない）。
+    /// `url` は Discord の添付ファイル URL（`Attachment::url`）を想定している。
+    pub async fn enqueue_upload(
+        &self,
+        guild_id: GuildId,
+        url: &str,
+        title: String,
+        volume: f32,
+    ) -> anyhow::Result<Queued> {
+        let call_lock = self
+            .songbird
+            .get(guild_id)
+            .context("ボイスチャンネルに接続していない")?;
+
+        let input: Input = HttpRequest::new(self.http.clone(), url.to_owned()).into();
+        let info = TrackInfo {
+            title,
+            duration: None,
+            url: Some(url.to_owned()),
+        };
+
+        Ok(self
+            .queue_input(guild_id, &call_lock, input, info, volume)
+            .await)
+    }
+
+    /// 積んだ入力を Call のキューへ入れ、音量を反映して結果を返す共通処理
+    /// （`enqueue` と `enqueue_upload` で共有）。
+    async fn queue_input(
+        &self,
+        guild_id: GuildId,
+        call_lock: &Arc<Mutex<Call>>,
+        input: Input,
+        info: TrackInfo,
+        volume: f32,
+    ) -> Queued {
         let (handle, position) = {
             let mut call = call_lock.lock().await;
             let handle = call.enqueue_input(input).await;
@@ -190,7 +231,7 @@ impl Manager {
 
         let track = info.as_queued();
         self.tracks.lock().await.insert(handle.uuid(), info);
-        Ok(Queued { track, position })
+        Queued { track, position }
     }
 
     /// (再生中, 待機中) の一覧。
