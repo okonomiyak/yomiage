@@ -1,9 +1,11 @@
 services:
   voicevox:
-    image: voicevox/voicevox_engine:cpu-0.25.2   # latest は使わない（2026-07 時点の安定版）
+    image: voicevox/voicevox_engine:nvidia-0.25.2   # latest は使わない（2026-07 時点の安定版）
     container_name: voicevox
     restart: unless-stopped
+    runtime: nvidia
     environment:
+      - NVIDIA_VISIBLE_DEVICES=all
       - VV_CPU_NUM_THREADS=2
     expose:
       - "50021"           # ホストには公開せず内部ネットワークのみ

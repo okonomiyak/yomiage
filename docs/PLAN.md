@@ -316,7 +316,11 @@ iwaserver の Proxmox 移行に合わせ、**読み上げ Bot 専用の 1 コン
 | ディスク | 20 GB | ENGINE イメージがモデル込みで数 GB ある |
 | ネットワーク | 既存ブリッジ + Tailscale（管理用） | Bot は外向き通信のみ、inbound 不要 |
 
-**LXC で詰まったら VM に切り替えて良い**。unprivileged LXC 上の Docker は overlayfs / cgroup まわりで踏むことがある。30 分溶かすようなら判断を切り替える。ENGINE は GPU 不要なので VM でも性能差はほぼ出ない。
+**LXC で詰まったら VM に切り替えて良い**。unprivileged LXC 上の Docker は overlayfs / cgroup まわりで踏むことがある。30 分溶かすようなら判断を切り替える。
+
+当初「ENGINE は GPU 不要（CPU で RTF 0.3〜0.5、合成が再生より速い）」と判断していたが、2026-08-21 に GPU 合成へ切り替えた（要望による）。ホスト（GTX 1050 Ti, Pascal）に NVIDIA ドライバ 580.173.02（Pascal は 580.xx が最終対応ブランチ）を dkms 導入し、unprivileged LXC 110 へ `/dev/nvidia0` `/dev/nvidiactl` `/dev/nvidia-uvm` `/dev/nvidia-uvm-tools` をキャラクタデバイスとして cgroup2 許可 + bind mount でパススルー、コンテナ内にはドライバの userspace ライブラリ（`--no-kernel-module`）と `nvidia-container-toolkit` を入れて Docker の `nvidia` runtime を有効化した。VM に切り替える場合はこの GPU パススルー設定ごと作り直しになる点に注意。
+
+**既知の制約**: GTX 1050 Ti は VRAM 4GB しかなく、ENGINE は一度ロードした話者モデルを解放しない（`run --help` にアンロード系のオプションが無い）。使われる話者が増えるほど VRAM を使い切り、合成が `CUBLAS_STATUS_ALLOC_FAILED` で失敗するようになる。対策として `scripts/gpu-vram-guard.sh` を LXC 110 の cron（2 分間隔）に登録し、VRAM 使用率が 85% を超えたら `voicevox` コンテナを自動再起動している。
 
 ### 10.2 状態とバックアップ
 
@@ -329,10 +333,12 @@ iwaserver の Proxmox 移行に合わせ、**読み上げ Bot 専用の 1 コン
 ```yaml
 services:
   voicevox:
-    image: voicevox/voicevox_engine:cpu-0.25.2   # latest は使わない（2026-07 時点の安定版）
+    image: voicevox/voicevox_engine:nvidia-0.25.2   # GPU 版（2026-08-21 に cpu-* から切替）
     container_name: voicevox
     restart: unless-stopped
+    runtime: nvidia
     environment:
+      - NVIDIA_VISIBLE_DEVICES=all
       - VV_CPU_NUM_THREADS=2
     expose:
       - "50021"           # ホストには公開せず内部ネットワークのみ
