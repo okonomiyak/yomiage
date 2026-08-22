@@ -33,6 +33,9 @@ pub async fn join(ctx: Context<'_>) -> Result<(), Error> {
         .await
         .ok_or_else(|| anyhow!("songbird が初期化されていない"))?;
 
+    // VC 接続のハンドシェイクで 3 秒を超えることがある。先に ack しておく。
+    ctx.defer().await?;
+
     match manager.join(guild_id, voice_channel).await {
         Ok(_call) => {
             tracing::info!(%guild_id, %voice_channel, "joined voice channel");

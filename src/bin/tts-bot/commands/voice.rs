@@ -43,6 +43,9 @@ pub async fn join(ctx: Context<'_>) -> Result<(), Error> {
         .await
         .ok_or_else(|| anyhow!("songbird が初期化されていない"))?;
 
+    // VC 接続のハンドシェイクで 3 秒を超えることがある。先に ack しておく。
+    ctx.defer().await?;
+
     match manager.join(guild_id, voice_channel).await {
         Ok(_call) => {
             // 紐づけがあるならそちらを優先する。無いときだけ実行チャンネルを登録する。
