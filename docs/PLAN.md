@@ -472,6 +472,14 @@ ssh "$PVE_HOST" "pct exec $CTID -- docker logs -f yomiage-bot"
     - **音楽 Bot の Intent は最小限**（`GUILDS` + `GUILD_VOICE_STATES` のみ）。テキストを一切読まないので `MESSAGE_CONTENT` / `GUILD_MESSAGES` は付けない。
     - **音楽 Bot の VC 自動退出はアナウンス無し**。読み上げ Bot と違い、音楽 Bot はそもそも喋る機能を持たない。
     - デプロイは `compose.yaml` の `tts-bot` / `music-bot` サービス（同じ Dockerfile イメージ、`command` で選択）、`.env` の `TTS_DISCORD_TOKEN` / `MUSIC_DISCORD_TOKEN` に分割。`scripts/yomiage-ctl.sh` の `status`/`logs`/`restart`/`start`/`stop`/`rebuild` は対象を `tts`/`music`/省略（両方）で選べるようにした。
+14. **決定 2026-08-22: 音楽 Bot に再生統計（`/stats`）を追加する**。読み上げ Bot の `/stats`（決定 11）と同じ枠組みだが、集計対象は曲別・ユーザー別の**再生回数**。
+    - `music_stats` テーブルは `guild_id, user_id, title` を主キーに再生回数を積む。曲の同一性は**タイトル文字列のみ**で判定する（URL はアップロード曲だと Discord CDN の署名付き URL で毎回変わるため、統計のキーにできない）。同名異曲を誤って合算する可能性は許容する。
+    - `/stats` は曲別ランキングとユーザー別ランキングを合わせて 1 つの embed に出す（それぞれ上位 10 件）。
+    - **数えるのは `/play`（単曲）と `/up_play` のみ**。`/play` が再生リストを取り込んだときは対象外（1 回の取り込みで大量の行が増えるのを避けるため）。
+15. **決定 2026-08-22: 曲がキューの中で自動的に切り替わったら、テキストでアナウンスする**（`src/music.rs` の `TrackEndAnnouncer` / `src/bin/music-bot/announce.rs`）。
+    - **対象はキューの自動進行だけ**。手動 `/play` の直後は既にコマンドの返信で「▶ 再生します」と分かるため、二重に出さない。実装は songbird の `TrackEvent::End` を曲ごとにフックし、直後の `call.queue().current()` で次の曲を調べる（songbird 内蔵の `QueueHandler` が同じ End イベントで先にキューを進めてから自分のハンドラが呼ばれる、という登録順に依存している）。
+    - **投稿先は `/join` したテキストチャンネル**（ギルドごとに直近の 1 つだけをメモリ上で覚える。`/bind` のような永続化はしない）。
+    - **`/stop` で止めたときは出さない**。`Manager::stop` が先に `tracks`（UUID→曲情報のマップ）を空にするため、`TrackEndAnnouncer` が情報を見つけられず何もしない、という既存の状態を流用している。
 
 ### 13-A 決定 3 から派生した未決事項（項目 13-1 とは別物）
 

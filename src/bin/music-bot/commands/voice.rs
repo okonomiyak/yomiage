@@ -38,6 +38,10 @@ pub async fn join(ctx: Context<'_>) -> Result<(), Error> {
 
     match manager.join(guild_id, voice_channel).await {
         Ok(_call) => {
+            ctx.data()
+                .announce_channels
+                .set(guild_id, ctx.channel_id())
+                .await;
             tracing::info!(%guild_id, %voice_channel, "joined voice channel");
             ctx.say(format!("<#{voice_channel}> に参加しました。"))
                 .await?;

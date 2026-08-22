@@ -552,6 +552,65 @@ impl Db {
             .collect())
     }
 
+    // ---- 音楽再生統計（/stats）。曲別・ユーザー別の再生回数 ----
+
+    /// 曲を 1 回再生した記録を積む。同じサーバー×ユーザー×曲名なら回数を足すだけ。
+    pub async fn record_music_play(
+        &self,
+        guild_id: GuildId,
+        user_id: UserId,
+        title: &str,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO music_stats (guild_id, user_id, title, plays)
+             VALUES (?, ?, ?, 1)
+             ON CONFLICT (guild_id, user_id, title) DO UPDATE SET
+                 plays = plays + 1",
+        )
+        .bind(id(guild_id.get()))
+        .bind(id(user_id.get()))
+        .bind(title)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// (曲名, 再生回数) を再生回数の多い順に。
+    pub async fn music_stats_by_track(
+        &self,
+        guild_id: GuildId,
+    ) -> anyhow::Result<Vec<(String, i64)>> {
+        Ok(sqlx::query_as(
+            "SELECT title, SUM(plays) FROM music_stats
+             WHERE guild_id = ?
+             GROUP BY title
+             ORDER BY SUM(plays) DESC",
+        )
+        .bind(id(guild_id.get()))
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    /// (user_id, 再生回数) を再生回数の多い順に。
+    pub async fn music_stats_by_user(
+        &self,
+        guild_id: GuildId,
+    ) -> anyhow::Result<Vec<(UserId, i64)>> {
+        let rows: Vec<(i64, i64)> = sqlx::query_as(
+            "SELECT user_id, SUM(plays) FROM music_stats
+             WHERE guild_id = ?
+             GROUP BY user_id
+             ORDER BY SUM(plays) DESC",
+        )
+        .bind(id(guild_id.get()))
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(user_id, plays)| (UserId::new(user_id as u64), plays))
+            .collect())
+    }
+
     /// 列名は呼び出し側の固定文字列のみ（外部入力を混ぜない）。
     async fn upsert_voice(&self, user_id: UserId, column: &str, value: f64) -> anyhow::Result<()> {
         let sql = format!(
@@ -749,6 +808,35 @@ mod tests {
         assert_eq!(
             db.speech_stats(guild, 19_000).await.expect("失敗"),
             vec![(user, 0, 13)]
+        );
+    }
+
+    #[tokio::test]
+    async fn music_stats_accumulate_by_track_and_user() {
+        let db = memory_db().await;
+        let guild = GuildId::new(1);
+        let alice = UserId::new(100);
+        let bob = UserId::new(200);
+
+        db.record_music_play(guild, alice, "曲A")
+            .await
+            .expect("失敗");
+        db.record_music_play(guild, alice, "曲A")
+            .await
+            .expect("失敗");
+        db.record_music_play(guild, alice, "曲B")
+            .await
+            .expect("失敗");
+        db.record_music_play(guild, bob, "曲A").await.expect("失敗");
+
+        // 同点になり得る組み合わせは避け、順序の判定を SQLite のタイブレークに依存させない。
+        assert_eq!(
+            db.music_stats_by_track(guild).await.expect("失敗"),
+            vec![("曲A".to_owned(), 3), ("曲B".to_owned(), 1)]
+        );
+        assert_eq!(
+            db.music_stats_by_user(guild).await.expect("失敗"),
+            vec![(alice, 3), (bob, 1)]
         );
     }
 

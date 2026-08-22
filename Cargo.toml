@@ -29,6 +29,9 @@ serenity = { version = "=0.12.5", default-features = false, features = [
 # 状態の同期を自分で書くことになる）。読み上げは play_input で直接鳴らすのでキューに入らない。
 songbird = { version = "=0.6.0", features = ["builtin-queue"] }
 
+# songbird の EventHandler トレイトが #[async_trait] で定義されているため、
+# 独自の TrackEvent ハンドラ（曲の自動切り替え通知）を実装するのに要る。
+async-trait = "0.1.91"
 anyhow = "1.0.104"
 dotenvy = "0.15.7"
 thiserror = "2.0.19"

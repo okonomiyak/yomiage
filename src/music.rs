@@ -13,11 +13,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context as _;
+use async_trait::async_trait;
 use poise::serenity_prelude::GuildId;
 use songbird::input::{Compose, HttpRequest, Input, YoutubeDl};
 use songbird::tracks::TrackHandle;
-use songbird::{Call, Songbird};
-use tokio::sync::Mutex;
+use songbird::{Call, Event, EventContext, EventHandler, Songbird, TrackEvent};
+use tokio::sync::{Mutex, mpsc};
 use uuid::Uuid;
 
 use crate::nicovideo::{self, CookieCopy};
@@ -42,7 +43,25 @@ pub struct Manager {
     http: reqwest::Client,
     /// トラック UUID → 曲の情報。songbird 0.6 の `TrackHandle::data` は型が違うと
     /// panic するので使わない（読み上げのトラックと混ざる余地を残さない）。
-    tracks: Mutex<HashMap<Uuid, TrackInfo>>,
+    /// `TrackEndAnnouncer`（別タスクではなく songbird のイベントハンドラ）からも
+    /// 参照するので `Arc` で持つ。
+    tracks: Arc<Mutex<HashMap<Uuid, TrackInfo>>>,
+    /// 曲がキューの中で自動的に切り替わったことを Discord 層に伝える送信側。
+    changes: mpsc::UnboundedSender<TrackChanged>,
+}
+
+/// 曲がキューの中で自動的に切り替わったときの通知（PLAN §13-15）。
+///
+/// `/play` の直後は既にコマンドの返信で「▶ 再生します」と分かるので、ここで
+/// 知らせるのは**キューの自動進行だけ**（前の曲が終わって次が始まった、または
+/// 尽きた）。`/stop` で明示的に止めたときは出さない
+/// （`Manager::stop` が `tracks` を先に空にするため、`TrackEndAnnouncer` 側で
+/// 情報が見つからず何もしない）。
+pub struct TrackChanged {
+    pub guild_id: GuildId,
+    pub finished: QueuedTrack,
+    /// 続けて再生を始めた曲。無ければキューが尽きた。
+    pub next: Option<QueuedTrack>,
 }
 
 /// キューに積んだ曲の付随情報。songbird 側からは取れないので自前で持つ。
@@ -113,12 +132,21 @@ pub struct NowPlaying {
 }
 
 impl Manager {
-    pub fn new(songbird: Arc<Songbird>, http: reqwest::Client) -> Self {
-        Self {
-            songbird,
-            http,
-            tracks: Mutex::new(HashMap::new()),
-        }
+    /// 戻り値の受信側は、自動進行の通知を読んで Discord に流し続けるタスクに渡すこと。
+    pub fn new(
+        songbird: Arc<Songbird>,
+        http: reqwest::Client,
+    ) -> (Self, mpsc::UnboundedReceiver<TrackChanged>) {
+        let (changes, receiver) = mpsc::unbounded_channel();
+        (
+            Self {
+                songbird,
+                http,
+                tracks: Arc::new(Mutex::new(HashMap::new())),
+                changes,
+            },
+            receiver,
+        )
     }
 
     pub fn songbird(&self) -> &Arc<Songbird> {
@@ -231,7 +259,23 @@ impl Manager {
 
         let track = info.as_queued();
         self.tracks.lock().await.insert(handle.uuid(), info);
+        self.watch_for_end(guild_id, call_lock, &handle);
         Queued { track, position }
+    }
+
+    /// この曲が終わったときに次の曲（または空になったこと）を通知できるようにする。
+    /// キューへ積んで `tracks` に情報を入れた直後に呼ぶこと。
+    fn watch_for_end(&self, guild_id: GuildId, call_lock: &Arc<Mutex<Call>>, handle: &TrackHandle) {
+        let announcer = TrackEndAnnouncer {
+            guild_id,
+            uuid: handle.uuid(),
+            tracks: self.tracks.clone(),
+            call: call_lock.clone(),
+            changes: self.changes.clone(),
+        };
+        if let Err(error) = handle.add_event(Event::Track(TrackEvent::End), announcer) {
+            tracing::warn!(%guild_id, %error, "failed to watch for track end");
+        }
     }
 
     /// (再生中, 待機中) の一覧。
@@ -484,6 +528,7 @@ impl Manager {
                 tracing::warn!(%guild_id, %error, "failed to apply volume");
             }
             self.tracks.lock().await.insert(handle.uuid(), info);
+            self.watch_for_end(guild_id, &call_lock, &handle);
             queued += 1;
         }
 
@@ -493,6 +538,44 @@ impl Manager {
             skipped: total.saturating_sub(PLAYLIST_LIMIT),
             unplayable,
         })
+    }
+}
+
+/// 1 曲の End イベントを受け、次に何が始まったか（尽きたか）を `TrackChanged` にして送る。
+/// `watch_for_end` が曲ごとに 1 つずつ生成する。
+struct TrackEndAnnouncer {
+    guild_id: GuildId,
+    uuid: Uuid,
+    tracks: Arc<Mutex<HashMap<Uuid, TrackInfo>>>,
+    call: Arc<Mutex<Call>>,
+    changes: mpsc::UnboundedSender<TrackChanged>,
+}
+
+#[async_trait]
+impl EventHandler for TrackEndAnnouncer {
+    async fn act(&self, _ctx: &EventContext<'_>) -> Option<Event> {
+        // `/stop` は tracks を先に空にする。見つからなければ手動停止なので何もしない。
+        let finished = self.tracks.lock().await.remove(&self.uuid)?.as_queued();
+
+        let next_handle = self.call.lock().await.queue().current();
+        let next = match next_handle {
+            Some(handle) => {
+                let tracks = self.tracks.lock().await;
+                Some(
+                    tracks
+                        .get(&handle.uuid())
+                        .map_or_else(TrackInfo::unknown_track, TrackInfo::as_queued),
+                )
+            }
+            None => None,
+        };
+
+        let _ = self.changes.send(TrackChanged {
+            guild_id: self.guild_id,
+            finished,
+            next,
+        });
+        None
     }
 }
 

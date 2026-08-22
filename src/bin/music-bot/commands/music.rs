@@ -91,6 +91,7 @@ pub async fn play(
 
     match ctx.data().music.enqueue(guild_id, query, volume).await {
         Ok(queued) => {
+            record_play(ctx, guild_id, &queued.track.title).await;
             let percent = (volume * 100.0).round() as u32;
             let embed = if queued.position <= 1 {
                 serenity::CreateEmbed::new()
@@ -155,6 +156,7 @@ pub async fn up_play(
         .await
     {
         Ok(queued) => {
+            record_play(ctx, guild_id, &queued.track.title).await;
             let percent = (volume * 100.0).round() as u32;
             let embed = if queued.position <= 1 {
                 serenity::CreateEmbed::new()
@@ -177,6 +179,18 @@ pub async fn up_play(
         }
     }
     Ok(())
+}
+
+/// 再生回数を積む。統計は補助情報なので、失敗しても再生自体は止めない。
+async fn record_play(ctx: Context<'_>, guild_id: serenity::GuildId, title: &str) {
+    if let Err(error) = ctx
+        .data()
+        .db
+        .record_music_play(guild_id, ctx.author().id, title)
+        .await
+    {
+        tracing::warn!(%guild_id, %error, "failed to record music stats");
+    }
 }
 
 /// 再生中の曲と、待っている曲を表示する。

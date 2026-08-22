@@ -1,3 +1,4 @@
+mod announce;
 mod commands;
 
 use std::sync::Arc;
@@ -17,6 +18,8 @@ pub struct Data {
     pub music: Arc<music::Manager>,
     /// 音楽パネルのシークバーを進めるタスク（ギルドごとに 1 本）。
     pub panels: Arc<commands::dashboard::Panels>,
+    /// 曲の自動切り替えアナウンスを流すチャンネル（`/join` したチャンネル）。
+    pub announce_channels: Arc<announce::AnnounceChannels>,
 }
 
 async fn event_handler(
@@ -151,12 +154,19 @@ async fn main() -> anyhow::Result<()> {
                     yomiage_bot::register_commands(ctx, framework.options(), &ready.guilds).await?;
                     tracing::info!(user = %ready.user.name, "logged in");
 
-                    let music = Arc::new(music::Manager::new(songbird, reqwest::Client::new()));
+                    let (music, changes) = music::Manager::new(songbird, reqwest::Client::new());
+                    let announce_channels = Arc::new(announce::AnnounceChannels::default());
+                    tokio::spawn(announce::run(
+                        changes,
+                        announce_channels.clone(),
+                        ctx.http.clone(),
+                    ));
 
                     Ok(Data {
                         db: database,
-                        music,
+                        music: Arc::new(music),
                         panels: Arc::default(),
+                        announce_channels,
                     })
                 })
             }

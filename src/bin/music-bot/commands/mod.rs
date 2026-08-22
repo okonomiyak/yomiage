@@ -3,6 +3,7 @@ mod help;
 mod music;
 mod playlist;
 mod settings;
+mod stats;
 mod voice;
 
 use crate::{Data, Error};
@@ -18,6 +19,7 @@ pub fn all() -> Vec<poise::Command<Data, Error>> {
         music::next(),
         music::stop(),
         music::volume(),
+        stats::stats(),
         playlist::playlist(),
         dashboard::dashboard(),
         settings::feature(),
