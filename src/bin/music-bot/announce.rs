@@ -39,19 +39,26 @@ pub async fn run(
             continue;
         };
 
-        let body = match change.next {
-            Some(next) => format!(
-                "⏹ {} の再生が終わりました。\n▶ {} を再生開始します。",
-                change.finished.link(),
-                next.link()
-            ),
-            None => format!(
-                "⏹ {} の再生が終わりました。キューは空です。",
-                change.finished.link()
-            ),
+        let embed = match change.next {
+            Some(next) => serenity::CreateEmbed::new()
+                .title("▶ 次の曲を再生します")
+                .description(format!(
+                    "⏹ {} の再生が終わりました。\n▶ {} を再生開始します。",
+                    change.finished.link(),
+                    next.link()
+                ))
+                .color(serenity::Colour::BLURPLE),
+            None => serenity::CreateEmbed::new()
+                .title("⏹ 再生終了")
+                .description(format!(
+                    "{} の再生が終わりました。キューは空です。",
+                    change.finished.link()
+                ))
+                .color(serenity::Colour::LIGHTER_GREY),
         };
 
-        if let Err(error) = channel_id.say(&http, body).await {
+        let message = serenity::CreateMessage::new().embed(embed);
+        if let Err(error) = channel_id.send_message(&http, message).await {
             tracing::warn!(guild_id = %change.guild_id, %error, "failed to announce track change");
         }
     }
