@@ -8,6 +8,7 @@ pub mod db;
 pub mod exvoice;
 pub mod music;
 pub mod nicovideo;
+pub mod session;
 pub mod speech;
 pub mod text;
 pub mod timesignal;

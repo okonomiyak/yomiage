@@ -9,6 +9,7 @@ use songbird::SerenityInit;
 use tracing_subscriber::EnvFilter;
 use yomiage_bot::db::Db;
 use yomiage_bot::music;
+use yomiage_bot::session::JoinTimes;
 
 pub type Error = yomiage_bot::Error;
 pub type Context<'a> = poise::Context<'a, Data, Error>;
@@ -20,6 +21,8 @@ pub struct Data {
     pub panels: Arc<commands::dashboard::Panels>,
     /// 曲の自動切り替えアナウンスを流すチャンネル（`/join` したチャンネル）。
     pub announce_channels: Arc<announce::AnnounceChannels>,
+    /// `/join` した時刻。誰もいなくなって自動退出するときの在室時間表示に使う。
+    pub join_times: Arc<JoinTimes>,
 }
 
 async fn event_handler(
@@ -44,8 +47,8 @@ async fn event_handler(
     Ok(())
 }
 
-/// VC から人がいなくなったら自動退出する。読み上げ Bot と違ってアナウンスはしない
-/// （音楽 Bot は喋らない）。
+/// VC から人がいなくなったら自動退出する。`/join` したチャンネルにテキストで通知する
+/// （音楽 Bot は喋らないので、読み上げ Bot と違って音声では知らせない）。
 async fn handle_voice_state(
     ctx: &serenity::Context,
     old: Option<&serenity::VoiceState>,
@@ -89,6 +92,19 @@ async fn handle_voice_state(
         tracing::warn!(%guild_id, %error, "failed to auto-leave");
     }
     data.music.stop(guild_id).await;
+
+    let mut message = "ボイスチャンネルに誰もいなくなったため退出しました。".to_owned();
+    if let Some(elapsed) = data.join_times.take(guild_id).await {
+        message.push_str(&format!(
+            "（{}ほど参加していました）",
+            yomiage_bot::session::format_duration(elapsed)
+        ));
+    }
+    if let Some(channel_id) = data.announce_channels.get(guild_id).await
+        && let Err(error) = channel_id.say(&ctx.http, message).await
+    {
+        tracing::warn!(%guild_id, %error, "failed to announce auto-leave");
+    }
 }
 
 /// Bot が居る VC に人が残っているか。残っていなければ自動退出する。
@@ -167,6 +183,7 @@ async fn main() -> anyhow::Result<()> {
                         music: Arc::new(music),
                         panels: Arc::default(),
                         announce_channels,
+                        join_times: Arc::default(),
                     })
                 })
             }

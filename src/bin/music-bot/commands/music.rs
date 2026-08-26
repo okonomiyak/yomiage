@@ -1,5 +1,7 @@
 //! 音楽再生のコマンド。読み上げに被せて流す。キューは songbird に任せている。
 
+use std::time::Duration;
+
 use anyhow::anyhow;
 use poise::serenity_prelude as serenity;
 
@@ -13,6 +15,9 @@ const VOLUME_RANGE: std::ops::RangeInclusive<u32> = 0..=100;
 
 /// 一覧で出す最大件数。
 const QUEUE_LIMIT: usize = 20;
+
+/// yt-dlp が詰まって返ってこないとき、`/play` をここで打ち切る。
+const PLAY_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// URL か検索語で音楽をキューに積む。何も流れていなければすぐ再生する。
 #[poise::command(slash_command, guild_only)]
@@ -53,13 +58,22 @@ pub async fn play(
         .map_or(0.3, |settings| settings.music_volume);
 
     if music::is_playlist_url(query) {
-        match ctx
-            .data()
-            .music
-            .enqueue_playlist(guild_id, query, volume)
-            .await
-        {
-            Ok(result) => {
+        let result = tokio::time::timeout(
+            PLAY_TIMEOUT,
+            ctx.data().music.enqueue_playlist(guild_id, query, volume),
+        )
+        .await;
+        match result {
+            Err(_) => {
+                tracing::warn!(%guild_id, "playlist queue timed out");
+                ctx.say("時間がかかりすぎたため中止しました。").await?;
+            }
+            Ok(Err(error)) => {
+                tracing::warn!(%guild_id, %error, "failed to queue playlist");
+                ctx.say(format!("再生リストを取り込めませんでした: {error}"))
+                    .await?;
+            }
+            Ok(Ok(result)) => {
                 let mut description = format!("{} 曲をキューに追加しました。", result.queued);
                 if result.unplayable > 0 {
                     description.push_str(&format!(
@@ -80,17 +94,25 @@ pub async fn play(
                     .color(serenity::Colour::BLURPLE);
                 ctx.send(poise::CreateReply::default().embed(embed)).await?;
             }
-            Err(error) => {
-                tracing::warn!(%guild_id, %error, "failed to queue playlist");
-                ctx.say(format!("再生リストを取り込めませんでした: {error}"))
-                    .await?;
-            }
         }
         return Ok(());
     }
 
-    match ctx.data().music.enqueue(guild_id, query, volume).await {
-        Ok(queued) => {
+    match tokio::time::timeout(
+        PLAY_TIMEOUT,
+        ctx.data().music.enqueue(guild_id, query, volume),
+    )
+    .await
+    {
+        Err(_) => {
+            tracing::warn!(%guild_id, "play timed out");
+            ctx.say("時間がかかりすぎたため中止しました。").await?;
+        }
+        Ok(Err(error)) => {
+            tracing::warn!(%guild_id, %error, "failed to queue music");
+            ctx.say(format!("再生できませんでした: {error}")).await?;
+        }
+        Ok(Ok(queued)) => {
             record_play(ctx, guild_id, &queued.track.title).await;
             let percent = (volume * 100.0).round() as u32;
             let embed = if queued.position <= 1 {
@@ -107,10 +129,6 @@ pub async fn play(
                     .field("順番", format!("{} 番目", queued.position), true)
             };
             ctx.send(poise::CreateReply::default().embed(embed)).await?;
-        }
-        Err(error) => {
-            tracing::warn!(%guild_id, %error, "failed to queue music");
-            ctx.say(format!("再生できませんでした: {error}")).await?;
         }
     }
     Ok(())
@@ -224,6 +242,27 @@ pub async fn queue(ctx: Context<'_>) -> Result<(), Error> {
         .description(body)
         .color(serenity::Colour::BLURPLE);
     ctx.send(poise::CreateReply::default().embed(embed)).await?;
+    Ok(())
+}
+
+/// `/queue` に出る番号を指定してキューから 1 曲取り除く（1 なら次の曲へ）。
+#[poise::command(slash_command, guild_only)]
+pub async fn remove(
+    ctx: Context<'_>,
+    #[description = "/queue に出る番号（1 = 再生中）"]
+    #[min = 1]
+    position: u32,
+) -> Result<(), Error> {
+    let guild_id = ctx
+        .guild_id()
+        .ok_or_else(|| anyhow!("guild_only コマンドなのに guild_id が取れない"))?;
+
+    if ctx.data().music.remove(guild_id, position as usize).await {
+        ctx.say(format!("{position} 番目を取り除きました。"))
+            .await?;
+    } else {
+        ctx.say("その番号の曲は見つかりませんでした。").await?;
+    }
     Ok(())
 }
 

@@ -416,6 +416,37 @@ impl Manager {
         }
     }
 
+    /// `/queue` に出る番号（1 = 再生中）でキューから 1 曲取り除く。
+    /// 1 を指定した場合は `skip` と同じ（次の曲へ進む）。取り除けたら true。
+    pub async fn remove(&self, guild_id: GuildId, position: usize) -> bool {
+        if position == 0 {
+            return false;
+        }
+        if position == 1 {
+            return self.skip(guild_id).await;
+        }
+
+        let Some(call_lock) = self.songbird.get(guild_id) else {
+            return false;
+        };
+        let queued = {
+            let call = call_lock.lock().await;
+            call.queue().dequeue(position - 1)
+        };
+        let Some(queued) = queued else {
+            return false;
+        };
+
+        // songbird のドキュメント通り、キューから外した曲は明示的に stop する。
+        let handle = queued.handle();
+        if let Err(error) = handle.stop() {
+            tracing::warn!(%guild_id, %error, "failed to stop removed track");
+        }
+        self.tracks.lock().await.remove(&handle.uuid());
+        tracing::debug!(%guild_id, position, "music track removed from queue");
+        true
+    }
+
     /// 全部止めてキューを空にする。止めるものがあれば true。
     pub async fn stop(&self, guild_id: GuildId) -> bool {
         let Some(call_lock) = self.songbird.get(guild_id) else {

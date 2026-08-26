@@ -48,6 +48,8 @@ pub async fn join(ctx: Context<'_>) -> Result<(), Error> {
 
     match manager.join(guild_id, voice_channel).await {
         Ok(_call) => {
+            ctx.data().join_times.set(guild_id).await;
+
             // 紐づけがあるならそちらを優先する。無いときだけ実行チャンネルを登録する。
             let bound = db.bound_text_channels(guild_id, voice_channel).await?;
             let targets = if bound.is_empty() { vec![here] } else { bound };
@@ -96,6 +98,7 @@ pub async fn leave(ctx: Context<'_>) -> Result<(), Error> {
             // キューを捨てて読み上げ対象を外す。紐づけ（/bind）は設定なので残す。
             ctx.data().speech.stop(guild_id).await;
             ctx.data().db.clear_read_channels(guild_id).await?;
+            let _ = ctx.data().join_times.take(guild_id).await;
 
             tracing::info!(%guild_id, "left voice channel");
             ctx.say("ボイスチャンネルから切断しました。").await?;

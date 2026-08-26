@@ -42,6 +42,7 @@ pub async fn join(ctx: Context<'_>) -> Result<(), Error> {
                 .announce_channels
                 .set(guild_id, ctx.channel_id())
                 .await;
+            ctx.data().join_times.set(guild_id).await;
             tracing::info!(%guild_id, %voice_channel, "joined voice channel");
             ctx.say(format!("<#{voice_channel}> に参加しました。"))
                 .await?;
@@ -74,6 +75,7 @@ pub async fn leave(ctx: Context<'_>) -> Result<(), Error> {
     match manager.remove(guild_id).await {
         Ok(()) => {
             ctx.data().music.stop(guild_id).await;
+            let _ = ctx.data().join_times.take(guild_id).await;
             tracing::info!(%guild_id, "left voice channel");
             ctx.say("ボイスチャンネルから切断しました。").await?;
         }

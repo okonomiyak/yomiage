@@ -18,7 +18,7 @@ pub async fn help(ctx: Context<'_>) -> Result<(), Error> {
 `/leave` … 切断してキューを捨てる
 `/bind <テキストch> <ボイスch>` … 聞き専チャンネルなどを VC に紐づける（保存される）
 `/unbind <テキストch>` … 紐づけを解除する
-`/skip` … 今読んでいる 1 件を飛ばす
+`/skip` … 今読んでいる 1 件を飛ばす（チャンネルに `s` とだけ発言しても同じ）
 `/stats` … 読み上げ文字数を見る（サーバー合計・ユーザー別、当日と累計）",
             false,
         )
@@ -36,6 +36,8 @@ pub async fn help(ctx: Context<'_>) -> Result<(), Error> {
 　（音楽の on/off は音楽 Bot 側の `/feature` から）
 `/maxlength <文字数>` … 1 発言で読む上限（1〜500、既定 100）
 `/dict add <表記> <読み>` / `/dict list` / `/dict remove` … サーバー辞書
+`/dict upload <CSVファイル>` … `表記,読み` の CSV でまとめて登録（1行1件、上書きマージ）
+`/dict export` … 登録済みの辞書を CSV でダウンロード
 `/timesignal interval <頻度>` … 時報の頻度（毎正時／30分おき、既定 毎正時）
 `/timesignal voice <話者>` … 時報を読む話者
 `/config` … 今の設定を表示

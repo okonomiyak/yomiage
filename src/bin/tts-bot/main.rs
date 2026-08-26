@@ -7,6 +7,7 @@ use poise::serenity_prelude::{self as serenity};
 use songbird::SerenityInit;
 use tracing_subscriber::EnvFilter;
 use yomiage_bot::db::Db;
+use yomiage_bot::session::JoinTimes;
 use yomiage_bot::speech::{self, SpeechTask};
 use yomiage_bot::{exvoice, text, timesignal, voicevox};
 
@@ -23,6 +24,8 @@ pub struct Data {
     /// `/voice` のオートコンプリート用。起動時に `/speakers` から作る（PLAN §8）。
     /// ENGINE が落ちていれば空のままにして、コマンド側で検証を諦める。
     pub styles: Vec<StyleChoice>,
+    /// `/join` した時刻。誰もいなくなって自動退出するときの在室時間表示に使う。
+    pub join_times: Arc<JoinTimes>,
 }
 
 async fn event_handler(
@@ -143,13 +146,16 @@ async fn handle_voice_state(
             tracing::warn!(%guild_id, %error, "failed to clear read channels on auto-leave");
         }
 
+        let mut message = "ボイスチャンネルに誰もいなくなったため退出しました。".to_owned();
+        if let Some(elapsed) = data.join_times.take(guild_id).await {
+            message.push_str(&format!(
+                "（{}ほど参加していました）",
+                yomiage_bot::session::format_duration(elapsed)
+            ));
+        }
+
         if let Some(channel) = notify
-            && let Err(error) = channel
-                .say(
-                    &ctx.http,
-                    "ボイスチャンネルに誰もいなくなったため退出しました。",
-                )
-                .await
+            && let Err(error) = channel.say(&ctx.http, message).await
         {
             tracing::warn!(%guild_id, %error, "failed to announce auto-leave");
         }
@@ -231,6 +237,14 @@ async fn handle_message(ctx: &serenity::Context, message: &serenity::Message, da
             tracing::warn!(%guild_id, %error, "failed to check read channel");
             return;
         }
+    }
+
+    // 「s」1文字だけの発言は読み上げず、今読んでいるものをスキップする（/skip のショートカット）。
+    if message.content.trim().eq_ignore_ascii_case("s") {
+        if data.speech.skip(guild_id).await {
+            let _ = message.react(&ctx.http, '⏭').await;
+        }
+        return;
     }
 
     let settings = match data.db.guild_settings(guild_id).await {
@@ -452,6 +466,7 @@ async fn main() -> anyhow::Result<()> {
                         exvoice,
                         speech,
                         styles,
+                        join_times: Arc::default(),
                     })
                 })
             }

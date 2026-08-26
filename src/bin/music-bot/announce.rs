@@ -22,7 +22,7 @@ impl AnnounceChannels {
         self.0.lock().await.insert(guild_id, channel_id);
     }
 
-    async fn get(&self, guild_id: serenity::GuildId) -> Option<serenity::ChannelId> {
+    pub(crate) async fn get(&self, guild_id: serenity::GuildId) -> Option<serenity::ChannelId> {
         self.0.lock().await.get(&guild_id).copied()
     }
 }
