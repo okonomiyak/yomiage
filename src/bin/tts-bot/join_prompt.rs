@@ -10,14 +10,19 @@ use crate::Data;
 
 const PREFIX: &str = "tts_join_prompt:";
 
-/// bind 済みの VC に人（Bot 以外）が入ったら、読み上げ参加を提案する。
-/// bind されていない VC や、既にその VC で読み上げ中のときは何もしない。
+/// bind 済みの VC に **1 人目**が入ったら、読み上げ参加を提案する。
+/// 既に誰か居るところに追加で入った場合や、bind されていない VC、
+/// 既にその VC で読み上げ中のときは何もしない。
 pub async fn maybe_prompt(
     ctx: &serenity::Context,
     guild_id: serenity::GuildId,
     voice_channel: serenity::ChannelId,
     data: &Data,
 ) {
+    if !is_first_human_here(ctx, guild_id, voice_channel) {
+        return;
+    }
+
     let enabled = data
         .db
         .guild_settings(guild_id)
@@ -57,6 +62,24 @@ pub async fn maybe_prompt(
             tracing::warn!(%guild_id, %error, "failed to send join prompt");
         }
     }
+}
+
+/// その VC に居る人間（Bot 以外）がちょうど 1 人＝今入った本人だけかどうか。
+/// 既に誰か居るところへの追加参加では、もう案内済みのはずなので出さない。
+fn is_first_human_here(
+    ctx: &serenity::Context,
+    guild_id: serenity::GuildId,
+    voice_channel: serenity::ChannelId,
+) -> bool {
+    // キャッシュの参照は Send でないので、この関数の中で完結させる。
+    let Some(guild) = ctx.cache.guild(guild_id) else {
+        return false;
+    };
+    let humans = guild.voice_states.values().filter(|state| {
+        state.channel_id == Some(voice_channel)
+            && !state.member.as_ref().is_some_and(|member| member.user.bot)
+    });
+    humans.count() == 1
 }
 
 /// sub bot が既にその VC に居るなら、メインからは案内しない（二重に読み上げが入るのを防ぐ）。
