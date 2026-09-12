@@ -1,4 +1,5 @@
 mod commands;
+mod join_prompt;
 
 use std::sync::Arc;
 
@@ -7,7 +8,7 @@ use poise::serenity_prelude::{self as serenity};
 use songbird::SerenityInit;
 use tracing_subscriber::EnvFilter;
 use yomiage_bot::db::Db;
-use yomiage_bot::session::JoinTimes;
+use yomiage_bot::session::{ExpectedMoves, JoinTimes};
 use yomiage_bot::speech::{self, SpeechTask};
 use yomiage_bot::{exvoice, text, timesignal, voicevox};
 
@@ -26,6 +27,11 @@ pub struct Data {
     pub styles: Vec<StyleChoice>,
     /// `/join` した時刻。誰もいなくなって自動退出するときの在室時間表示に使う。
     pub join_times: Arc<JoinTimes>,
+    /// `/move` による意図した VC 移動の目印（PLAN 外の運用機能）。
+    pub expected_moves: Arc<ExpectedMoves>,
+    /// 予備機（standby）の tts-bot の User ID。`SUB_BOT_ID` が未設定なら None で、
+    /// その場合は読み上げ参加の案内に sub 用のボタンを出さない。
+    pub sub_bot_id: Option<serenity::UserId>,
 }
 
 async fn event_handler(
@@ -41,6 +47,12 @@ async fn event_handler(
         }
         serenity::FullEvent::VoiceStateUpdate { old, new } => {
             handle_voice_state(ctx, old.as_ref(), new, data).await;
+        }
+        serenity::FullEvent::InteractionCreate { interaction } => {
+            // 読み上げ参加の案内メッセージのボタン。それ以外は poise が扱う。
+            if let Some(component) = interaction.as_message_component() {
+                join_prompt::handle_component(ctx, component, data).await;
+            }
         }
         _ => {}
     }
@@ -59,7 +71,37 @@ async fn handle_voice_state(
     };
     let me = ctx.cache.current_user().id;
     if new.user_id == me {
+        // Bot 自身の VC が変わった（完全切断、または他人による強制移動）。
+        // 登録済みの読み上げ対象と在室時刻を捨てる。/leave 由来のときは既に空なので、
+        // 二重に走っても実害は無い。ミュート等の変化は before == after なので対象外。
+        let before = old.and_then(|state| state.channel_id);
+        if before.is_some() && new.channel_id != before {
+            if data.expected_moves.take(guild_id).await {
+                // `/move` による意図した移動。読み上げ対象はコマンド側で更新済み。
+                tracing::info!(%guild_id, ?before, after = ?new.channel_id, "bot moved via /move");
+                return;
+            }
+            tracing::info!(%guild_id, ?before, after = ?new.channel_id, "bot's voice channel changed; discarding read channels");
+            if let Err(error) = data.speech.songbird().remove(guild_id).await {
+                tracing::warn!(%guild_id, %error, "failed to remove songbird call after disconnect");
+            }
+            data.speech.stop(guild_id).await;
+            if let Err(error) = data.db.clear_read_channels(guild_id).await {
+                tracing::warn!(%guild_id, %error, "failed to clear read channels after disconnect");
+            }
+            let _ = data.join_times.take(guild_id).await;
+        }
         return;
+    }
+
+    // bind 済みの VC に人（Bot 以外）が入ったら、読み上げ参加を提案する。
+    // Bot がどこにも接続していなくても対象になるので、下の
+    // 「Bot が今どの VC に居るか」より前に見る必要がある。
+    if let Some(after) = new.channel_id
+        && old.and_then(|state| state.channel_id) != Some(after)
+        && !new.member.as_ref().is_some_and(|member| member.user.bot)
+    {
+        join_prompt::maybe_prompt(ctx, guild_id, after, data).await;
     }
 
     // Bot が今どの VC に居るか。居なければ何もしない。
@@ -398,6 +440,13 @@ async fn main() -> anyhow::Result<()> {
     let database_url =
         std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:data/bot.db".to_owned());
 
+    // 予備機（standby）の tts-bot。読み上げ参加の案内に「sub に任せる」ボタンを
+    // 出すかどうかの判定だけに使う（自動連携はしない。案内するだけ）。
+    let sub_bot_id = std::env::var("SUB_BOT_ID")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(serenity::UserId::new);
+
     let exvoice_dir = std::env::var("EXVOICE_DIR").unwrap_or_else(|_| "exVOICE".to_owned());
     let exvoice = Arc::new(exvoice::Library::load(std::path::Path::new(&exvoice_dir)));
     if exvoice.is_empty() {
@@ -467,6 +516,8 @@ async fn main() -> anyhow::Result<()> {
                         speech,
                         styles,
                         join_times: Arc::default(),
+                        expected_moves: Arc::default(),
+                        sub_bot_id,
                     })
                 })
             }

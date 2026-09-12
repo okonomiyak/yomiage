@@ -1,7 +1,7 @@
 //! ボイスチャンネルに繋いでいた時間を覚えておく。
 //! 誰もいなくなって自動退出するときに「どのくらい参加していたか」を出すのに使う。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use poise::serenity_prelude::GuildId;
@@ -24,6 +24,26 @@ impl JoinTimes {
             .await
             .remove(&guild_id)
             .map(|joined| joined.elapsed())
+    }
+}
+
+/// `/move` による意図した VC 移動の目印。
+///
+/// Bot 自身の VoiceStateUpdate は「他人に強制移動された」場合と区別が付かないので、
+/// `/move` を実行する側が事前に印を付けておき、イベント側はそれを見て
+/// 読み上げ対象の破棄をスキップする（印が無ければ強制移動として扱う）。
+#[derive(Default)]
+pub struct ExpectedMoves(Mutex<HashSet<GuildId>>);
+
+impl ExpectedMoves {
+    /// `/move` が songbird に移動を指示する直前に呼ぶ。
+    pub async fn mark(&self, guild_id: GuildId) {
+        self.0.lock().await.insert(guild_id);
+    }
+
+    /// 呼んだら消える。`/move` 由来なら true。
+    pub async fn take(&self, guild_id: GuildId) -> bool {
+        self.0.lock().await.remove(&guild_id)
     }
 }
 

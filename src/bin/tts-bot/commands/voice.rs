@@ -112,6 +112,84 @@ pub async fn leave(ctx: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
+/// 接続中のボイスチャンネルを移動する。
+///
+/// `/leave` + `/join` と違い、キューや読み上げは止めずに繋ぎ直す。
+/// 読み上げ対象は移動先の紐づけ（無ければ実行チャンネル）に差し替える。
+#[poise::command(slash_command, guild_only, rename = "move")]
+pub async fn move_channel(
+    ctx: Context<'_>,
+    #[description = "移動先のボイスチャンネル"]
+    #[channel_types("Voice")]
+    voice: serenity::GuildChannel,
+) -> Result<(), Error> {
+    let guild_id = ctx
+        .guild_id()
+        .ok_or_else(|| anyhow!("guild_only コマンドなのに guild_id が取れない"))?;
+
+    let manager = songbird::get(ctx.serenity_context())
+        .await
+        .ok_or_else(|| anyhow!("songbird が初期化されていない"))?;
+
+    let Some(call_lock) = manager.get(guild_id) else {
+        ctx.say("ボイスチャンネルに参加していません。`/join` を使ってください。")
+            .await?;
+        return Ok(());
+    };
+
+    let current = {
+        let call = call_lock.lock().await;
+        call.current_channel()
+    };
+    let current = current.map(|id| serenity::ChannelId::new(id.0.get()));
+    if current == Some(voice.id) {
+        ctx.say("既にそのボイスチャンネルにいます。").await?;
+        return Ok(());
+    }
+
+    // VC 接続のハンドシェイクで 3 秒を超えることがある。先に ack しておく。
+    ctx.defer().await?;
+
+    // 移動で発生する自分の VoiceStateUpdate を、外部からの強制移動と区別するための目印。
+    ctx.data().expected_moves.mark(guild_id).await;
+
+    match manager.join(guild_id, voice.id).await {
+        Ok(_call) => {
+            let db = &ctx.data().db;
+            // 移動元の紐づけ先はもう読まないので、対象を移動先のものに差し替える。
+            db.clear_read_channels(guild_id).await?;
+            let bound = db.bound_text_channels(guild_id, voice.id).await?;
+            let targets = if bound.is_empty() {
+                vec![ctx.channel_id()]
+            } else {
+                bound
+            };
+            for channel in &targets {
+                db.add_read_channel(guild_id, *channel).await?;
+            }
+
+            let list = targets
+                .iter()
+                .map(|id| format!("<#{id}>"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            tracing::info!(%guild_id, voice = %voice.id, "moved voice channel");
+            ctx.say(format!(
+                "<#{}> に移動しました。{list} の発言を読み上げます。",
+                voice.id
+            ))
+            .await?;
+        }
+        Err(error) => {
+            ctx.data().expected_moves.take(guild_id).await;
+            tracing::warn!(%guild_id, voice = %voice.id, ?error, "failed to move voice channel");
+            ctx.say("ボイスチャンネルへの移動に失敗しました。").await?;
+        }
+    }
+
+    Ok(())
+}
+
 /// 今読み上げている 1 件を飛ばす。
 #[poise::command(slash_command, guild_only)]
 pub async fn skip(ctx: Context<'_>) -> Result<(), Error> {
@@ -144,6 +222,29 @@ pub async fn bind(
     let guild_id = ctx
         .guild_id()
         .ok_or_else(|| anyhow!("guild_only コマンドなのに guild_id が取れない"))?;
+
+    let bot_id = ctx.serenity_context().cache.current_user().id;
+    let member = guild_id.member(ctx, bot_id).await?;
+    let guild = guild_id.to_partial_guild(ctx).await?;
+    let text_perms = guild.user_permissions_in(&text, &member);
+    let voice_perms = guild.user_permissions_in(&voice, &member);
+
+    if !text_perms.view_channel() {
+        ctx.say(format!(
+            "Bot に <#{}> を見る権限が無いため、紐づけを保存しませんでした。",
+            text.id
+        ))
+        .await?;
+        return Ok(());
+    }
+    if !voice_perms.view_channel() || !voice_perms.connect() {
+        ctx.say(format!(
+            "Bot に <#{}> へ接続する権限が無いため、紐づけを保存しませんでした。",
+            voice.id
+        ))
+        .await?;
+        return Ok(());
+    }
 
     ctx.data()
         .db
