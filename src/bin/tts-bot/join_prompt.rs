@@ -34,7 +34,10 @@ pub async fn maybe_prompt(
             return;
         }
     };
-    if targets.is_empty() || is_already_reading(data, guild_id, voice_channel).await {
+    if targets.is_empty()
+        || is_already_reading(data, guild_id, voice_channel).await
+        || sub_bot_is_here(ctx, guild_id, voice_channel, data.sub_bot_id)
+    {
         return;
     }
 
@@ -54,6 +57,27 @@ pub async fn maybe_prompt(
             tracing::warn!(%guild_id, %error, "failed to send join prompt");
         }
     }
+}
+
+/// sub bot が既にその VC に居るなら、メインからは案内しない（二重に読み上げが入るのを防ぐ）。
+fn sub_bot_is_here(
+    ctx: &serenity::Context,
+    guild_id: serenity::GuildId,
+    voice_channel: serenity::ChannelId,
+    sub_bot_id: Option<serenity::UserId>,
+) -> bool {
+    let Some(sub_id) = sub_bot_id else {
+        return false;
+    };
+    // キャッシュの参照は Send でないので、この関数の中で完結させる。
+    let Some(guild) = ctx.cache.guild(guild_id) else {
+        return false;
+    };
+    guild
+        .voice_states
+        .get(&sub_id)
+        .and_then(|state| state.channel_id)
+        == Some(voice_channel)
 }
 
 async fn is_already_reading(
