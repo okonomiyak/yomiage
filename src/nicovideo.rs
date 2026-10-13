@@ -11,6 +11,11 @@
 //! そこで、ニコニコだけは **yt-dlp 自身にダウンロードさせて、その標準出力を
 //! そのまま songbird に流す**。Cookie は yt-dlp の中で完結するので問題にならない。
 //!
+//! **SoundCloud も同じ経路で流す**（`is_soundcloud`）。SoundCloud は `hls_aac_*`
+//! （HLS / fMP4 + AAC）が選ばれ、songbird の `HlsRequest` ではデコードできず
+//! 無音になるため。Cookie は使わないが、ニコニコ用の Cookie コピーを渡しても
+//! ドメインが違うので送られない。
+//!
 //! 音声は `audio-aac-*`（HLS / fMP4 + AAC）が選ばれる。`Cargo.toml` で symphonia の
 //! `isomp4` と `aac` を有効にしてあるのでデコードできる。**どちらかを外すと、
 //! 取得は成功するのに音が出なくなる**。回帰テストは `tests` を参照。
@@ -305,6 +310,14 @@ pub fn is_nicovideo(query: &str) -> bool {
     host == "nicovideo.jp" || host.ends_with(".nicovideo.jp") || host == "nico.ms"
 }
 
+/// SoundCloud の URL か（`on.soundcloud.com` の短縮 URL を含む）。
+pub fn is_soundcloud(query: &str) -> bool {
+    let Some(host) = host_of(query) else {
+        return false;
+    };
+    host == "soundcloud.com" || host.ends_with(".soundcloud.com")
+}
+
 /// URL からホスト部分だけを小文字で取り出す。http(s) 以外は None。
 ///
 /// ニコニコ判定専用ではなく汎用の URL パースなので、`music::is_playlist_url` の
@@ -413,6 +426,43 @@ mod tests {
     fn port_and_userinfo_are_stripped() {
         assert!(is_nicovideo("https://www.nicovideo.jp:443/watch/sm9"));
         assert!(is_nicovideo("https://user@www.nicovideo.jp/watch/sm9"));
+    }
+
+    #[test]
+    fn soundcloud_urls_are_recognised() {
+        assert!(is_soundcloud("https://soundcloud.com/forss/flickermood"));
+        assert!(is_soundcloud("https://m.soundcloud.com/forss/flickermood"));
+        assert!(is_soundcloud("https://on.soundcloud.com/abc"));
+        assert!(!is_soundcloud("https://example.com/?q=soundcloud.com"));
+        assert!(!is_soundcloud("https://notsoundcloud.com/forss"));
+        assert!(!is_soundcloud("soundcloud"));
+    }
+
+    /// **SoundCloud の音声が songbird で実際に再生可能になるか。**
+    ///
+    /// songbird の `YoutubeDl`（`HlsRequest`）ではここが落ちた。
+    #[tokio::test]
+    #[ignore = "ネットワークと yt-dlp が必要"]
+    async fn soundcloud_stream_is_playable_by_songbird() {
+        use songbird::input::Input;
+        use songbird::input::codecs::{get_codec_registry, get_probe};
+
+        let mut source = NicoVideo::new("https://soundcloud.com/forss/flickermood".to_owned());
+
+        let metadata = source.aux_metadata().await.expect("メタデータが取れない");
+        assert!(
+            metadata.duration.is_some(),
+            "長さが取れないとバーが出せない"
+        );
+
+        let input = Input::Lazy(Box::new(source));
+        let playable = input
+            .make_playable_async(get_codec_registry(), get_probe())
+            .await;
+        assert!(
+            playable.is_ok(),
+            "songbird が SoundCloud の音声を再生できない"
+        );
     }
 
     /// **ニコニコの音声が songbird で実際に再生可能になるか。**

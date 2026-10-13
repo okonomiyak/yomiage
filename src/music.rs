@@ -167,9 +167,11 @@ impl Manager {
 
         let is_url = query.starts_with("http://") || query.starts_with("https://");
 
-        // ニコニコだけは yt-dlp に直接ダウンロードさせる。songbird に URL を渡すと
-        // Cookie が足りず 403 になるため（理由は nicovideo モジュールの説明を参照）。
-        let (input, mut info) = if nicovideo::is_nicovideo(query) {
+        // ニコニコと SoundCloud は yt-dlp に直接ダウンロードさせる。songbird に URL を
+        // 渡すと、ニコニコは Cookie が足りず 403、SoundCloud は HLS をデコードできず
+        // 無音になるため（理由は nicovideo モジュールの説明を参照）。
+        let (input, mut info) = if nicovideo::is_nicovideo(query) || nicovideo::is_soundcloud(query)
+        {
             let mut source = nicovideo::NicoVideo::new(query.to_owned());
             // メタデータも実際の取得も同じ yt-dlp なので、**ここで引けない動画は
             // 再生もできない**（会員限定・センシティブ指定など）。黙って積むと
@@ -499,6 +501,9 @@ impl Manager {
             .context("ボイスチャンネルに接続していない")?;
 
         let is_nico = nicovideo::is_nicovideo(url);
+        // SoundCloud も単曲と同じく yt-dlp に直接流させる。一覧にタイトルが無いので、
+        // 事前確認のメタデータで埋まるのも都合がよい。
+        let piped = is_nico || nicovideo::is_soundcloud(url);
         let entries = list_playlist_entries(url).await?;
         if entries.is_empty() {
             anyhow::bail!("再生リストが空か、取得できませんでした");
@@ -513,7 +518,7 @@ impl Manager {
                 continue;
             };
 
-            let (input, info) = if is_nico {
+            let (input, info) = if piped {
                 let mut source = nicovideo::NicoVideo::new(track_url.clone());
                 match source.aux_metadata().await {
                     Ok(metadata) => {
@@ -530,7 +535,7 @@ impl Manager {
                     Err(error) => {
                         tracing::info!(
                             %guild_id, %error,
-                            "nicovideo playlist entry is not playable; skipping"
+                            "piped playlist entry is not playable; skipping"
                         );
                         unplayable += 1;
                         continue;
@@ -610,7 +615,7 @@ impl EventHandler for TrackEndAnnouncer {
     }
 }
 
-/// YouTube の再生リストページ、またはニコニコのマイリスト・シリーズの URL か。
+/// YouTube の再生リストページ、ニコニコのマイリスト・シリーズ、SoundCloud のセットの URL か。
 ///
 /// **プレイリスト専用ページの URL だけを対象にする。** `watch?v=...&list=...` の
 /// ように「再生リスト内の 1 曲を再生中」の URL まで拾うと、1 曲だけのつもりで
@@ -623,6 +628,9 @@ pub fn is_playlist_url(url: &str) -> bool {
 
     if host == "nicovideo.jp" || host.ends_with(".nicovideo.jp") {
         return path.contains("/mylist/") || path.contains("/series/");
+    }
+    if host == "soundcloud.com" || host.ends_with(".soundcloud.com") {
+        return path.contains("/sets/");
     }
     if host == "youtube.com" || host == "www.youtube.com" || host == "m.youtube.com" {
         return path.contains("/playlist") && url.contains("list=");
@@ -853,6 +861,14 @@ mod tests {
     fn nicovideo_mylist_and_series_are_recognised() {
         assert!(is_playlist_url("https://www.nicovideo.jp/mylist/12345"));
         assert!(is_playlist_url("https://www.nicovideo.jp/series/12345"));
+    }
+
+    #[test]
+    fn soundcloud_sets_are_playlists_but_tracks_are_not() {
+        assert!(is_playlist_url(
+            "https://soundcloud.com/forss/sets/ecclesia"
+        ));
+        assert!(!is_playlist_url("https://soundcloud.com/forss/flickermood"));
     }
 
     #[test]
