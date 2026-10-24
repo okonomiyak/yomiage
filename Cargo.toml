@@ -60,9 +60,9 @@ serde_json = "1"
 
 # songbird は symphonia を default-features = false で入れており、コーデックを一切有効化しない。
 # ここで有効にしたものだけが再生できる。消すと該当形式が黙って再生できなくなる。
-#   wav / pcm  : VOICEVOX ENGINE が返す wav
+#   wav / pcm  : VOICEVOX ENGINE が返す wav。/up_play の WAV も
 #   mkv        : YouTube の音声のみ形式（webm）。Opus デコーダは songbird が足す
-#   isomp4/aac : YouTube が m4a を返してきたとき用。ニコニコ・SoundCloud（HLS / fMP4 + AAC）も
+#   isomp4/aac : YouTube が m4a を返してきたとき用。ニコニコ・SoundCloud（HLS / fMP4 + AAC）、/up_play の M4A も
 #   mp3        : /up_play でアップロードされた MP3 用
 symphonia = { version = "0.5.5", default-features = false, features = [
     "wav",

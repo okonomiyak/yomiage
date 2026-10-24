@@ -18,7 +18,7 @@ pub async fn help(ctx: Context<'_>) -> Result<(), Error> {
 `/play <URL または検索語>` … キューに積む。空いていればすぐ流す
 　（YouTube・ニコニコ動画・SoundCloud の URL に対応。検索語のときは YouTube から探す）
 　（YouTube の再生リスト・ニコニコのマイリスト/シリーズ・SoundCloud のセットの URL は、まとめて最大 50 曲キューに積む）
-`/up_play <ファイル>` … 添付した MP3 をそのまま再生する（yt-dlp を介さない）
+`/up_play <ファイル>` … 添付した MP3・WAV・M4A をそのまま再生する（yt-dlp を介さない）
 `/queue` … 再生中と待機中を見る
 `/remove <番号>` … `/queue` の番号でキューから 1 曲取り除く（1 なら次の曲へ）
 `/next` … 次の曲へ / `/stop` … 止めてキューを空にする

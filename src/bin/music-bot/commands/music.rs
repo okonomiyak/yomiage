@@ -134,12 +134,12 @@ pub async fn play(
     Ok(())
 }
 
-/// 添付した MP3 をそのままキューに積んで再生する。yt-dlp を介さないので
+/// 添付した音声ファイル（MP3・WAV・M4A）をそのままキューに積んで再生する。yt-dlp を介さないので
 /// YouTube 側の 403 などとは無関係に鳴らせる。
 #[poise::command(slash_command, guild_only)]
 pub async fn up_play(
     ctx: Context<'_>,
-    #[description = "MP3 ファイル"] file: serenity::Attachment,
+    #[description = "MP3・WAV・M4A ファイル"] file: serenity::Attachment,
 ) -> Result<(), Error> {
     let guild_id = ctx
         .guild_id()
@@ -151,10 +151,9 @@ pub async fn up_play(
         return Ok(());
     }
 
-    let is_mp3 = file.content_type.as_deref() == Some("audio/mpeg")
-        || file.filename.to_lowercase().ends_with(".mp3");
-    if !is_mp3 {
-        ctx.say("MP3 ファイルを添付してください。").await?;
+    if !is_playable_upload(&file) {
+        ctx.say("MP3・WAV・M4A（AAC）ファイルを添付してください。")
+            .await?;
         return Ok(());
     }
 
@@ -192,11 +191,31 @@ pub async fn up_play(
             ctx.send(poise::CreateReply::default().embed(embed)).await?;
         }
         Err(error) => {
-            tracing::warn!(%guild_id, %error, "failed to queue uploaded mp3");
+            tracing::warn!(%guild_id, %error, "failed to queue uploaded audio");
             ctx.say(format!("再生できませんでした: {error}")).await?;
         }
     }
     Ok(())
+}
+
+/// Cargo.toml で symphonia に有効化してあるコーデックで鳴らせる形式か。
+/// m4a は AAC のみ。中身が ALAC だと拡張子では見分けられず、再生時に失敗する。
+fn is_playable_upload(file: &serenity::Attachment) -> bool {
+    const EXTENSIONS: [&str; 3] = [".mp3", ".wav", ".m4a"];
+    const TYPES: [&str; 6] = [
+        "audio/mpeg",
+        "audio/wav",
+        "audio/x-wav",
+        "audio/wave",
+        "audio/mp4",
+        "audio/x-m4a",
+    ];
+    let name = file.filename.to_lowercase();
+    EXTENSIONS.iter().any(|ext| name.ends_with(ext))
+        || file
+            .content_type
+            .as_deref()
+            .is_some_and(|ty| TYPES.contains(&ty))
 }
 
 /// 再生回数を積む。統計は補助情報なので、失敗しても再生自体は止めない。
