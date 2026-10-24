@@ -340,6 +340,8 @@ services:
     container_name: voicevox
     restart: unless-stopped
     runtime: nvidia
+    mem_limit: 8g          # ENGINE だけを落として自動復帰させる（§13-18。LXC は 10GB）
+    memswap_limit: 8g
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - VV_CPU_NUM_THREADS=2
@@ -512,6 +514,7 @@ ssh "$PVE_HOST" "pct exec $CTID -- docker logs -f yomiage-bot"
     - キュー上は 1 発言のまま（キュー上限 20 の数え方は変えない）。合成タスクの中で文ごとに合成して audio queue へ流すので、文 N の再生中に文 N+1 を合成する先読みもそのまま効く。
     - **`/skip` は発言単位**。文ごとの音声に発言の通し番号を付け、飛ばした番号以下の文は合成・再生とも捨てる（`speech::Prepared::message`）。
     - 途中の文の合成に失敗したら、その発言の残りは読まない（欠けた文章を読んでも意味が通らないため）。
+    - **voicevox コンテナにメモリ上限 8GB を付け、LXC 110 を 10GB にした**（利用者の判断）。膨らみすぎたら LXC ごと詰まる前に ENGINE だけが落ち、`restart: unless-stopped` で戻る。落ちている間の発言は合成失敗として 1 度だけ通知される。
     - 句点の無い長い 1 文は分割されず、従来どおり待たされる。読点 `、` でも区切るかは、実際に困ってから決める。
 
 ### 13-A 決定 3 から派生した未決事項（項目 13-1 とは別物）

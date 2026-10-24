@@ -4,6 +4,11 @@ services:
     container_name: voicevox
     restart: unless-stopped
     runtime: nvidia
+    # ENGINE は長文を合成するとメモリを抱えたまま返さず、話者ごとに積み上がる（PLAN §13-18）。
+    # LXC（10GB）ごと詰まる前に ENGINE だけを落とし、restart で自動復帰させる。
+    # スワップも同じ値にして、スワップに逃げて遅くなるのを防ぐ。
+    mem_limit: 8g
+    memswap_limit: 8g
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - VV_CPU_NUM_THREADS=2
