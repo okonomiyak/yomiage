@@ -75,6 +75,8 @@ pub enum Error {
         status: reqwest::StatusCode,
         body: String,
     },
+    #[error("ストリーミング合成の応答に content-length が無い")]
+    NoContentLength,
 }
 
 pub struct Client {
@@ -134,15 +136,7 @@ impl Client {
     pub async fn synthesize(&self, text: &str, voice: Voice) -> Result<Vec<u8>, Error> {
         let started = Instant::now();
 
-        let mut query = self.audio_query(text, voice.style).await?;
-        if let Some(object) = query.as_object_mut() {
-            // ユーザー設定で上書きする（PLAN §7-5）。
-            object.insert("speedScale".to_owned(), json!(voice.speed));
-            object.insert("pitchScale".to_owned(), json!(voice.pitch));
-            object.insert("intonationScale".to_owned(), json!(voice.intonation));
-            object.insert("outputSamplingRate".to_owned(), json!(OUTPUT_SAMPLING_RATE));
-            object.insert("outputStereo".to_owned(), json!(true));
-        }
+        let query = self.voiced_query(text, voice).await?;
         let wav = self.synthesis(&query, voice.style).await?;
 
         tracing::debug!(
@@ -153,6 +147,50 @@ impl Client {
             "synthesized",
         );
         Ok(wav)
+    }
+
+    /// テキスト → wav（48kHz ステレオ）を合成しながら少しずつ返す（ENGINE 0.26.0 以上）。
+    /// 返すのはヘッダを受け取った時点の応答で、本文は呼び出し側が読み進める。
+    /// ENGINE は合成前に全体の長さを計算して content-length を付けてくる。
+    pub async fn synthesize_stream(
+        &self,
+        text: &str,
+        voice: Voice,
+    ) -> Result<(u64, reqwest::Response), Error> {
+        let started = Instant::now();
+
+        let query = self.voiced_query(text, voice).await?;
+        let res = self
+            .http
+            .post(format!("{}/streaming_synthesis", self.base))
+            .query(&[("speaker", voice.style.0)])
+            .json(&query)
+            .send()
+            .await?;
+        let res = check(res).await?;
+        let len = res.content_length().ok_or(Error::NoContentLength)?;
+
+        tracing::debug!(
+            style = %voice.style,
+            chars = text.chars().count(),
+            bytes = len,
+            first_response_ms = started.elapsed().as_millis(),
+            "streaming synthesis started",
+        );
+        Ok((len, res))
+    }
+
+    /// AudioQuery を作り、ユーザー設定と出力形式で上書きする（PLAN §7-5）。
+    async fn voiced_query(&self, text: &str, voice: Voice) -> Result<Value, Error> {
+        let mut query = self.audio_query(text, voice.style).await?;
+        if let Some(object) = query.as_object_mut() {
+            object.insert("speedScale".to_owned(), json!(voice.speed));
+            object.insert("pitchScale".to_owned(), json!(voice.pitch));
+            object.insert("intonationScale".to_owned(), json!(voice.intonation));
+            object.insert("outputSamplingRate".to_owned(), json!(OUTPUT_SAMPLING_RATE));
+            object.insert("outputStereo".to_owned(), json!(true));
+        }
+        Ok(query)
     }
 
     /// AudioQuery は ENGINE のバージョンでフィールドが増減するので、型を起こさず Value のまま扱う。
@@ -252,6 +290,22 @@ mod tests {
 
         assert_eq!(&wav[0..4], b"RIFF", "wav ヘッダが無い");
         // fmt チャンク: 22-23 = チャンネル数, 24-27 = サンプリングレート
+        let channels = u16::from_le_bytes([wav[22], wav[23]]);
+        let rate = u32::from_le_bytes([wav[24], wav[25], wav[26], wav[27]]);
+        assert_eq!(channels, 2, "ステレオになっていない");
+        assert_eq!(rate, OUTPUT_SAMPLING_RATE, "48kHz になっていない");
+    }
+
+    #[tokio::test]
+    #[ignore = "ENGINE（0.26.0 以上）の起動が必要"]
+    async fn stream_body_matches_content_length() {
+        let (len, res) = test_client()
+            .synthesize_stream("これはストリーミングのテストなのだ。", Voice::default())
+            .await
+            .expect("ストリーミング合成に失敗");
+        let wav = res.bytes().await.expect("本文の受信に失敗");
+
+        assert_eq!(wav.len() as u64, len, "content-length と本文の長さが違う");
         let channels = u16::from_le_bytes([wav[22], wav[23]]);
         let rate = u32::from_le_bytes([wav[24], wav[25], wav[26], wav[27]]);
         assert_eq!(channels, 2, "ステレオになっていない");

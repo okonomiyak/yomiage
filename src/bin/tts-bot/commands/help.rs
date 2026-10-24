@@ -33,7 +33,7 @@ pub async fn help(ctx: Context<'_>) -> Result<(), Error> {
         .field(
             "サーバー設定",
             "\
-`/feature <機能> <有効/無効>` … 読み上げ・時報を個別に on/off
+`/feature <機能> <有効/無効>` … 読み上げ・時報・ストリーミング合成を個別に on/off
 　（音楽の on/off は音楽 Bot 側の `/feature` から）
 `/maxlength <文字数>` … 1 発言で読む上限（1〜500、既定 100）
 `/dict add <表記> <読み>` / `/dict list` / `/dict remove` … サーバー辞書

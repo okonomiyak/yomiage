@@ -28,6 +28,8 @@ pub struct GuildSettings {
     pub time_signal_interval: u32,
     /// 時報を読む話者のスタイル ID。
     pub time_signal_style: u32,
+    /// ストリーミング合成で読むか。ENGINE 0.26.0 以上が要るので既定は無効。
+    pub streaming_enabled: bool,
 }
 
 impl Default for GuildSettings {
@@ -42,6 +44,7 @@ impl Default for GuildSettings {
             time_signal_enabled: false,
             time_signal_interval: 60,
             time_signal_style: crate::voicevox::DEFAULT_STYLE.0,
+            streaming_enabled: false,
         }
     }
 }
@@ -247,7 +250,8 @@ impl Db {
     pub async fn guild_settings(&self, guild_id: GuildId) -> anyhow::Result<GuildSettings> {
         let row = sqlx::query(
             "SELECT max_length, read_bots, ignore_prefix, music_volume, tts_enabled, music_enabled,
-                    time_signal_enabled, time_signal_interval, time_signal_style
+                    time_signal_enabled, time_signal_interval, time_signal_style,
+                    streaming_enabled
              FROM guild_settings WHERE guild_id = ?",
         )
         .bind(id(guild_id.get()))
@@ -267,6 +271,7 @@ impl Db {
             time_signal_enabled: row.try_get::<i64, _>("time_signal_enabled")? != 0,
             time_signal_interval: row.try_get::<i64, _>("time_signal_interval")?.max(1) as u32,
             time_signal_style: row.try_get::<i64, _>("time_signal_style")?.max(0) as u32,
+            streaming_enabled: row.try_get::<i64, _>("streaming_enabled")? != 0,
         })
     }
 
@@ -315,6 +320,10 @@ impl Db {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    pub async fn set_streaming_enabled(&self, guild_id: GuildId, on: bool) -> anyhow::Result<()> {
+        self.set_feature(guild_id, "streaming_enabled", on).await
     }
 
     pub async fn set_time_signal_enabled(&self, guild_id: GuildId, on: bool) -> anyhow::Result<()> {
@@ -877,6 +886,16 @@ mod tests {
         let settings = db.guild_settings(guild).await.expect("失敗");
         assert!(settings.tts_enabled);
         assert!(!settings.music_enabled);
+
+        // ストリーミング合成だけは既定で無効。
+        assert!(!settings.streaming_enabled);
+        db.set_streaming_enabled(guild, true).await.expect("失敗");
+        assert!(
+            db.guild_settings(guild)
+                .await
+                .expect("失敗")
+                .streaming_enabled
+        );
     }
 
     #[tokio::test]

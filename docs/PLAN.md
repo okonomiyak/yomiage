@@ -207,6 +207,7 @@ Discord Gateway
 - 配信の開始は `VoiceState.self_stream` の立ち上がりで拾う。チャンネルの移動を伴わないので、移動判定より先に見る必要がある。
 - 読み上げる名前は **サーバーニックネーム > 表示名(global name) > ユーザー名** の順に採用する。
 - 名前も §7-3 の正規化を通す（絵文字だらけのニックネーム対策）。正規化後に空になったらアナウンスしない。
+- **名前にもサーバー辞書（§7-4）を当てる**（決定 2026-10-24、利用者の要望による）。読み間違える名前を `/dict` で直せるようにするため。当てるのは名前の部分だけで、「参加しました」などの定型文には当てない。
 - アナウンスは Bot が接続している VC の入退室のみが対象。
 - **アナウンスの話者は対象ユーザーの設定話者を使う**（決定 2026-07-26）。入ってきた本人の声で「〇〇が参加しました」と読む。未設定なら既定話者。
 
@@ -258,6 +259,7 @@ enqueue ─▶ [text queue: 20] ─▶ 合成タスク ─▶ [audio queue: 1] �
 | GET | `/speakers` | 話者一覧取得（`/voice` のオートコンプリート用にキャッシュ） |
 | POST | `/audio_query` | テキスト → 合成用クエリ |
 | POST | `/synthesis` | クエリ → wav |
+| POST | `/streaming_synthesis` | クエリ → wav を少しずつ返す（0.26.0 以上。§13-17）|
 | POST | `/initialize_speaker` | 話者のウォームアップ |
 | POST | `/user_dict_word` | ユーザー辞書登録 |
 | GET | `/user_dict` | 辞書一覧 |
@@ -334,7 +336,7 @@ iwaserver の Proxmox 移行に合わせ、**読み上げ Bot 専用の 1 コン
 ```yaml
 services:
   voicevox:
-    image: voicevox/voicevox_engine:nvidia-0.25.2   # GPU 版（2026-08-21 に cpu-* から切替）
+    image: voicevox/voicevox_engine:nvidia-0.26.0   # GPU 版（2026-08-21 に cpu-* から切替、2026-10-24 に 0.26.0 へ）
     container_name: voicevox
     restart: unless-stopped
     runtime: nvidia
@@ -344,7 +346,12 @@ services:
     expose:
       - "50021"           # ホストには公開せず内部ネットワークのみ
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:50021/version"]
+      # 0.26.0 からイメージに curl が無いので、bash の /dev/tcp で /version を叩く。
+      test:
+        - CMD
+        - bash
+        - -c
+        - "exec 3<>/dev/tcp/127.0.0.1/50021 && printf 'GET /version HTTP/1.0\r\n\r\n' >&3 && head -n1 <&3 | grep -q ' 200 '"
       interval: 30s
       timeout: 5s
       retries: 3
@@ -487,6 +494,15 @@ ssh "$PVE_HOST" "pct exec $CTID -- docker logs -f yomiage-bot"
     - **bind 済みの VC に人が入ったら読み上げ参加を提案する**（`src/bin/tts-bot/join_prompt.rs`）。Bot がそこに居ない・sub bot もそこに居ない・その VC が bind 済みのときだけ、紐づいたテキストチャンネルに「参加する」ボタン付きメッセージを投稿する。押すと `/join` 相当で接続する。既に別の VC で使用中なら「他のボイスチャンネルで使用中です」を返し、**予備機（standby）の tts-bot が同じサーバーのメンバーにいれば**「予備 Bot に参加してもらう」ボタンを追加で出す。このボタンは案内文言を返すだけで、**自動連携はしない**（予備機とはリアルタイムに繋がっていないため。`SUB_BOT_ID` 環境変数で予備機の User ID を設定する）。**sub bot が既にその VC に居るときは案内自体を出さない**（決定 2026-09-12、二重に読み上げが入るのを防ぐため）。
     - **案内を出すのは VC に 1 人目が入ったときだけ**（決定 2026-09-12、`join_prompt::is_first_human_here`）。人が居るところへの追加参加では出さない。誰も居ない状態からの参加かどうかは、その時点の VC 内の人数（Bot 以外）で判定するので、Bot 側で状態を持つ必要が無い。
     - **`/move <ボイスch>` を追加**。接続中の VC を、`/leave`+`/join` と違いキューを止めずに移動する。読み上げ対象は移動先の紐づけ（無ければ実行チャンネル）に差し替える。`/move` が起こす自分の `VoiceStateUpdate` は上記の「強制移動」処理と見分けが付かないため、`session::ExpectedMoves` で移動直前に印を付け、イベント側はその印があれば読み上げ対象の破棄をスキップする。
+
+17. **決定 2026-10-24: ストリーミング合成を `/feature` で切り替えられるようにする**（利用者の要望による）。長文の喋り出しが遅い問題（§4.1）への対策。
+    - ENGINE 0.26.0 で追加された `POST /streaming_synthesis` を使う。voicevox_core 0.17.1 のストリーミングトークを ENGINE が HTTP で出したもので、**Bot に core を直接組み込む必要は無い**（ENGINE を別コンテナで疎結合にする方針 §6 はそのまま）。
+    - **ギルド単位、既定は無効**（`guild_settings.streaming_enabled`）。ENGINE が 0.26.0 未満だと合成が 404 で失敗するため。有効にするとメッセージと時報に効く。入退室アナウンスは短く速くならないので常に通常の合成。
+    - ENGINE は合成前に全体の長さを計算して `content-length` と正しい wav ヘッダを返す。応答本文を songbird の `AsyncAdapterStream`（seek 不可）に渡し、`Input::Live` として再生する（`speech::Prepared::stream`）。
+    - **リングバッファは本文がまるごと入る大きさにする**。ENGINE からは再生を待たずに吸い出せるので、前の発言の再生中に次の合成が進む（従来の先読み §7.2 と同じ効果）。メモリ使用量は従来の wav 全体保持と同じ。
+    - ENGINE の同時リクエスト制限（semaphore）は**本文を読み切った時点で返す**。再生の終わりまで持つと、ENGINE が暇なのに他のギルドを待たせるため。
+    - 文を `。！？` で区切って順に投げる案（引き継ぎ書 §7-1）は不要になった。区切るとつなぎ目のイントネーションが切れ、キュー上限の数え方も変わるため。
+    - ENGINE 0.26.0 はイメージから `curl` が消えたので、compose のヘルスチェックを bash の `/dev/tcp` に置き換えた（§10.3）。
 
 ### 13-A 決定 3 から派生した未決事項（項目 13-1 とは別物）
 

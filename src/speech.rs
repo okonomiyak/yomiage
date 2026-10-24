@@ -8,17 +8,26 @@
 //!
 //! audio queue にバッファを持たせることで、再生中に次の合成が走る（先読み合成 / PLAN §4.1）。
 //! 合成の RTF は 0.3〜0.5 なので、一度流れ始めれば再生が合成を追い越すことはない。
+//!
+//! ストリーミング合成（`/feature`）が有効なギルドでは、合成の完了を待たずに
+//! audio queue へ流す。再生は ENGINE が最初の区切りを返した時点で始まる。
 
 use std::collections::HashMap;
+use std::io::{self, SeekFrom};
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
+use futures_util::TryStreamExt;
 use poise::serenity_prelude::{self as serenity, ChannelId, GuildId, async_trait};
-use songbird::input::Input;
+use songbird::input::{AsyncAdapterStream, AsyncMediaSource, AudioStream, Input, LiveInput};
 use songbird::tracks::TrackHandle;
 use songbird::{Event, EventContext, EventHandler as VoiceEventHandler, Songbird};
-use tokio::sync::{Mutex, Notify, Semaphore, mpsc};
+use tokio::io::{AsyncRead, AsyncSeek, ReadBuf};
+use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit, Semaphore, mpsc};
+use tokio_util::io::StreamReader;
 
 use crate::voicevox::{self, Voice};
 
@@ -36,6 +45,8 @@ pub struct SpeechTask {
     pub voice: Voice,
     /// 合成せずにこの wav をそのまま鳴らす（exVOICE）。
     pub file: Option<PathBuf>,
+    /// ストリーミング合成を使う（ギルド設定 / ENGINE 0.26.0 以上）。
+    pub streaming: bool,
     /// 合成に失敗したときの通知先（PLAN §4）。入退室アナウンスなど、
     /// 通知先が無いものは None。
     pub origin: Option<ChannelId>,
@@ -51,6 +62,93 @@ pub struct Manager {
     queues: Mutex<HashMap<GuildId, mpsc::Sender<SpeechTask>>>,
     /// 今どのギルドで何を再生しているか。`/skip` から止めるために持つ。
     playing: Arc<Mutex<HashMap<GuildId, Playing>>>,
+}
+
+/// 再生待ちの音声。
+struct Prepared {
+    input: Input,
+    /// 再生時間の見積もり。完了イベントを取りこぼしたときの保険にしか使わない。
+    expected: Duration,
+}
+
+impl Prepared {
+    fn wav(wav: Vec<u8>) -> Self {
+        Self {
+            expected: expected_duration(&wav),
+            input: Input::from(wav),
+        }
+    }
+
+    /// ストリーミング合成の応答本文を songbird に渡す。
+    fn stream(len: u64, res: reqwest::Response, permit: OwnedSemaphorePermit) -> Self {
+        let body = EngineStream {
+            body: Box::new(StreamReader::new(
+                res.bytes_stream().map_err(io::Error::other),
+            )),
+            len,
+            permit: Some(permit),
+        };
+        // 本文がまるごと入る大きさにしておく。こうすると ENGINE からは再生を
+        // 待たずに吸い出せて、前の発言の再生中に次の合成が進む（先読み）。
+        let adapter = AsyncAdapterStream::new(Box::new(body), (len as usize).max(4096));
+        Self {
+            input: Input::Live(
+                LiveInput::Raw(AudioStream {
+                    input: Box::new(adapter),
+                }),
+                None,
+            ),
+            expected: Duration::from_secs_f64(len as f64 / f64::from(voicevox::BYTES_PER_SEC)),
+        }
+    }
+}
+
+/// ストリーミング合成の応答本文。seek はできない。
+/// 本文を読み切った時点で ENGINE の枠（semaphore）を返す。再生の終わりまで
+/// 持っていると、ENGINE が暇なのに他のギルドの合成を待たせてしまうため。
+struct EngineStream {
+    body: Box<dyn AsyncRead + Send + Sync + Unpin>,
+    len: u64,
+    permit: Option<OwnedSemaphorePermit>,
+}
+
+impl AsyncRead for EngineStream {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let before = buf.filled().len();
+        let poll = Pin::new(&mut self.body).poll_read(cx, buf);
+        match &poll {
+            // 0 バイト = 読み切った。
+            Poll::Ready(Ok(())) if buf.filled().len() == before => self.permit = None,
+            Poll::Ready(Err(_)) => self.permit = None,
+            _ => {}
+        }
+        poll
+    }
+}
+
+impl AsyncSeek for EngineStream {
+    fn start_seek(self: Pin<&mut Self>, _position: SeekFrom) -> io::Result<()> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
+
+    fn poll_complete(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<u64>> {
+        Poll::Ready(Err(io::ErrorKind::Unsupported.into()))
+    }
+}
+
+#[async_trait]
+impl AsyncMediaSource for EngineStream {
+    fn is_seekable(&self) -> bool {
+        false
+    }
+
+    async fn byte_len(&self) -> Option<u64> {
+        Some(self.len)
+    }
 }
 
 /// 再生中のトラックと、その完了を待っている側を起こすための通知。
@@ -122,7 +220,7 @@ impl Manager {
 
     fn spawn_pipeline(&self, guild_id: GuildId) -> mpsc::Sender<SpeechTask> {
         let (text_tx, mut text_rx) = mpsc::channel::<SpeechTask>(TEXT_QUEUE_LIMIT);
-        let (audio_tx, mut audio_rx) = mpsc::channel::<Vec<u8>>(AUDIO_QUEUE_LIMIT);
+        let (audio_tx, mut audio_rx) = mpsc::channel::<Prepared>(AUDIO_QUEUE_LIMIT);
 
         // 合成タスク。1 件失敗しても止めず、そのメッセージだけ飛ばす。
         let engine = self.engine.clone();
@@ -133,9 +231,9 @@ impl Manager {
             let mut reported = false;
             while let Some(task) = text_rx.recv().await {
                 // 収録済み素材があるならそれを鳴らす。ENGINE は使わない。
-                let wav = if let Some(path) = &task.file {
+                let prepared = if let Some(path) = &task.file {
                     match tokio::fs::read(path).await {
-                        Ok(bytes) => bytes,
+                        Ok(bytes) => Prepared::wav(bytes),
                         Err(error) => {
                             tracing::warn!(%guild_id, %error, path = %path.display(),
                                 "failed to read exvoice file; skipping");
@@ -143,13 +241,24 @@ impl Manager {
                         }
                     }
                 } else {
-                    let Ok(_permit) = engine_limit.acquire().await else {
+                    let Ok(permit) = engine_limit.clone().acquire_owned().await else {
                         break;
                     };
-                    match engine.synthesize(&task.text, task.voice).await {
-                        Ok(wav) => {
+                    let result = if task.streaming {
+                        engine
+                            .synthesize_stream(&task.text, task.voice)
+                            .await
+                            .map(|(len, res)| Prepared::stream(len, res, permit))
+                    } else {
+                        engine
+                            .synthesize(&task.text, task.voice)
+                            .await
+                            .map(Prepared::wav)
+                    };
+                    match result {
+                        Ok(prepared) => {
                             reported = false;
-                            wav
+                            prepared
                         }
                         Err(error) => {
                             tracing::warn!(%guild_id, %error, "synthesis failed; skipping message");
@@ -168,7 +277,7 @@ impl Manager {
                         }
                     }
                 };
-                if audio_tx.send(wav).await.is_err() {
+                if audio_tx.send(prepared).await.is_err() {
                     break;
                 }
             }
@@ -179,8 +288,8 @@ impl Manager {
         let songbird = self.songbird.clone();
         let playing = self.playing.clone();
         tokio::spawn(async move {
-            while let Some(wav) = audio_rx.recv().await {
-                if let Err(error) = play(&songbird, &playing, guild_id, wav).await {
+            while let Some(prepared) = audio_rx.recv().await {
+                if let Err(error) = play(&songbird, &playing, guild_id, prepared).await {
                     tracing::warn!(%guild_id, %error, "playback failed; skipping");
                 }
             }
@@ -195,18 +304,17 @@ async fn play(
     songbird: &Songbird,
     playing: &Mutex<HashMap<GuildId, Playing>>,
     guild_id: GuildId,
-    wav: Vec<u8>,
+    Prepared { input, expected }: Prepared,
 ) -> anyhow::Result<()> {
     let Some(call_lock) = songbird.get(guild_id) else {
         anyhow::bail!("VC に接続していない");
     };
 
-    let expected = expected_duration(&wav);
     let done = Arc::new(Notify::new());
 
     let track = {
         let mut call = call_lock.lock().await;
-        let track = call.play_input(Input::from(wav));
+        let track = call.play_input(input);
         // 正常終了とエラーの両方で起こす。片方だけだと詰まる。
         track.add_event(Event::Track(songbird::TrackEvent::End), Done(done.clone()))?;
         track.add_event(
@@ -287,5 +395,30 @@ mod tests {
             .make_playable_async(get_codec_registry(), get_probe())
             .await;
         assert!(playable.is_ok(), "songbird が wav を再生可能にできない");
+    }
+
+    /// ストリーミング合成の本文を、seek できない入力のまま songbird が読めるか。
+    #[tokio::test]
+    #[ignore = "ENGINE（0.26.0 以上）の起動が必要"]
+    async fn engine_stream_is_playable_by_songbird() {
+        let base =
+            std::env::var("VOICEVOX_URL").unwrap_or_else(|_| "http://localhost:50021".to_owned());
+        let engine = voicevox::Client::new(&base).expect("URL が不正");
+        let (len, res) = engine
+            .synthesize_stream("再生できるかのテストなのだ。", Voice::default())
+            .await
+            .expect("ストリーミング合成に失敗");
+        let limit = Arc::new(Semaphore::new(1));
+        let permit = limit.clone().acquire_owned().await.expect("枠が取れない");
+
+        let prepared = Prepared::stream(len, res, permit);
+        let playable = prepared
+            .input
+            .make_playable_async(get_codec_registry(), get_probe())
+            .await;
+        assert!(
+            playable.is_ok(),
+            "songbird がストリームを再生可能にできない"
+        );
     }
 }

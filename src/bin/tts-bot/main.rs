@@ -125,6 +125,15 @@ async fn handle_voice_state(
         .guild_settings(guild_id)
         .await
         .is_ok_and(|settings| settings.tts_enabled);
+    // 名前の読みにもサーバー辞書を当てる（メッセージと同じ）。
+    let dictionary = if announce {
+        data.db.dictionary(guild_id).await.unwrap_or_else(|error| {
+            tracing::warn!(%guild_id, %error, "failed to load dictionary");
+            Vec::new()
+        })
+    } else {
+        Vec::new()
+    };
 
     // 配信（Go Live）の開始と終了。チャンネルの移動を伴わないので、下の
     // 「移動していなければ何もしない」判定より先に見る必要がある。
@@ -134,7 +143,7 @@ async fn handle_voice_state(
     if after == Some(bot_channel)
         && was_streaming != is_streaming
         && announce
-        && let Some(name) = display_name(new)
+        && let Some(name) = display_name(new, &dictionary)
     {
         let action = if is_streaming { "開始" } else { "終了" };
         speak(
@@ -157,7 +166,7 @@ async fn handle_voice_state(
         return;
     }
 
-    if let Some(name) = display_name(new).filter(|_| announce) {
+    if let Some(name) = display_name(new, &dictionary).filter(|_| announce) {
         let action = if joined { "参加" } else { "退出" };
         speak(
             data,
@@ -218,6 +227,8 @@ async fn speak(data: &Data, guild_id: serenity::GuildId, user_id: serenity::User
                 text,
                 voice,
                 file: None,
+                // アナウンスは短く、ストリーミングにしても速くならない。
+                streaming: false,
                 origin: None,
             },
         )
@@ -225,8 +236,8 @@ async fn speak(data: &Data, guild_id: serenity::GuildId, user_id: serenity::User
 }
 
 /// 読み上げる名前は サーバーニックネーム > 表示名 > ユーザー名 の順（PLAN §7.1）。
-/// 正規化を通して空になったらアナウンスしない。
-fn display_name(state: &serenity::VoiceState) -> Option<String> {
+/// 正規化（辞書を含む）を通して空になったらアナウンスしない。
+fn display_name(state: &serenity::VoiceState, dictionary: &[(String, String)]) -> Option<String> {
     let raw = state
         .member
         .as_ref()
@@ -239,7 +250,13 @@ fn display_name(state: &serenity::VoiceState) -> Option<String> {
         })
         .unwrap_or_default();
 
-    text::normalize(&raw, &text::Options::default())
+    text::normalize(
+        &raw,
+        &text::Options {
+            dictionary,
+            ..text::Options::default()
+        },
+    )
 }
 
 /// Bot が居る VC に人が残っているか。残っていなければ自動退出する。
@@ -367,6 +384,7 @@ async fn handle_message(ctx: &serenity::Context, message: &serenity::Message, da
                 text,
                 voice,
                 file,
+                streaming: settings.streaming_enabled,
                 origin: Some(message.channel_id),
             },
         )

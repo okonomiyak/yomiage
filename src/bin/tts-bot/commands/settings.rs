@@ -173,9 +173,11 @@ pub enum Feature {
     Tts,
     #[name = "時報"]
     TimeSignal,
+    #[name = "ストリーミング合成"]
+    Streaming,
 }
 
-/// 読み上げ／時報を個別に有効・無効にする（サーバー単位）。
+/// 読み上げ／時報／ストリーミング合成を個別に有効・無効にする（サーバー単位）。
 #[poise::command(slash_command, guild_only)]
 pub async fn feature(
     ctx: Context<'_>,
@@ -200,6 +202,11 @@ pub async fn feature(
         Feature::TimeSignal => {
             data.db.set_time_signal_enabled(guild_id, enabled).await?;
             "時報"
+        }
+        // 長文でも合成の完了を待たずに喋り始める（ENGINE 0.26.0 以上が要る）。
+        Feature::Streaming => {
+            data.db.set_streaming_enabled(guild_id, enabled).await?;
+            "ストリーミング合成"
         }
     };
 
@@ -245,7 +252,7 @@ pub async fn config(ctx: Context<'_>) -> Result<(), Error> {
 
     ctx.say(format!(
         "**サーバー設定**\n\
-         機能: 読み上げ {} / 音楽 {} / 時報 {}\n\
+         機能: 読み上げ {} / 音楽 {} / 時報 {} / ストリーミング合成 {}\n\
          時報: {}分おき・話者 {}\n\
          読み上げ中: {channel_list}\n\
          紐づけ:\n{binding_list}\n\
@@ -267,6 +274,11 @@ pub async fn config(ctx: Context<'_>) -> Result<(), Error> {
             "無効"
         },
         if settings.time_signal_enabled {
+            "有効"
+        } else {
+            "無効"
+        },
+        if settings.streaming_enabled {
             "有効"
         } else {
             "無効"
