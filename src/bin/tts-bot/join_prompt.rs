@@ -71,15 +71,7 @@ fn is_first_human_here(
     guild_id: serenity::GuildId,
     voice_channel: serenity::ChannelId,
 ) -> bool {
-    // キャッシュの参照は Send でないので、この関数の中で完結させる。
-    let Some(guild) = ctx.cache.guild(guild_id) else {
-        return false;
-    };
-    let humans = guild.voice_states.values().filter(|state| {
-        state.channel_id == Some(voice_channel)
-            && !state.member.as_ref().is_some_and(|member| member.user.bot)
-    });
-    humans.count() == 1
+    crate::humans_in(ctx, guild_id, voice_channel) == Some(1)
 }
 
 /// sub bot が既にその VC に居るなら、メインからは案内しない（二重に読み上げが入るのを防ぐ）。
@@ -176,6 +168,17 @@ async fn handle_join(
         if let Err(error) = interaction.create_response(&ctx.http, response).await {
             tracing::warn!(%guild_id, %error, "failed to respond to join prompt");
         }
+        return;
+    }
+
+    // 案内を出した後に全員抜けていたら入らない。無人の VC に居座ることになる。
+    if crate::humans_in(ctx, guild_id, voice_channel) == Some(0) {
+        reply_ephemeral(
+            ctx,
+            interaction,
+            "ボイスチャンネルに誰もいないため参加しません。",
+        )
+        .await;
         return;
     }
 

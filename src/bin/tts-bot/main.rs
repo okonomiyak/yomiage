@@ -177,7 +177,7 @@ async fn handle_voice_state(
         .await;
     }
 
-    if left && should_leave(ctx, guild_id, bot_channel, me) {
+    if left && humans_in(ctx, guild_id, bot_channel) == Some(0) {
         tracing::info!(%guild_id, "voice channel is empty; leaving");
 
         // 通知先は登録を消す前に取っておく。
@@ -260,23 +260,23 @@ fn display_name(state: &serenity::VoiceState, dictionary: &[(String, String)]) -
     )
 }
 
-/// Bot が居る VC に人が残っているか。残っていなければ自動退出する。
-fn should_leave(
+/// その VC に居る人間（Bot 以外）の数。キャッシュに無くて分からなければ None。
+/// 自動退出・`/join`・参加案内の判定はすべてここを通す。
+pub(crate) fn humans_in(
     ctx: &serenity::Context,
     guild_id: serenity::GuildId,
-    bot_channel: serenity::ChannelId,
-    me: serenity::UserId,
-) -> bool {
+    voice_channel: serenity::ChannelId,
+) -> Option<usize> {
+    let me = ctx.cache.current_user().id;
     // キャッシュの参照は Send でないので、この関数の中で完結させる。
-    let Some(guild) = ctx.cache.guild(guild_id) else {
-        return false;
-    };
-    !guild.voice_states.values().any(|state| {
-        state.channel_id == Some(bot_channel)
+    let guild = ctx.cache.guild(guild_id)?;
+    let humans = guild.voice_states.values().filter(|state| {
+        state.channel_id == Some(voice_channel)
             && state.user_id != me
             // 他の Bot は「人」として数えない。
             && !state.member.as_ref().is_some_and(|member| member.user.bot)
-    })
+    });
+    Some(humans.count())
 }
 
 /// メッセージを読み上げキューへ流す（PLAN §7）。

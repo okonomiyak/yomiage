@@ -39,6 +39,14 @@ pub async fn join(ctx: Context<'_>) -> Result<(), Error> {
         return Ok(());
     };
 
+    // 紐づけ経由だと実行者が VC に居なくても接続先が決まる。無人の VC には入らない
+    // （自動退出は誰かが抜けたときにしか判定しないので、入ると居座ってしまう）。
+    if crate::humans_in(ctx.serenity_context(), guild_id, voice_channel) == Some(0) {
+        ctx.say(format!("<#{voice_channel}> に誰もいないため参加しません。"))
+            .await?;
+        return Ok(());
+    }
+
     let manager = songbird::get(ctx.serenity_context())
         .await
         .ok_or_else(|| anyhow!("songbird が初期化されていない"))?;
