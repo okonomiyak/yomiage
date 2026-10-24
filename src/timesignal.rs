@@ -97,6 +97,7 @@ pub async fn run(db: Arc<Db>, speech: Arc<speech::Manager>) {
                         },
                         file: None,
                         streaming: settings.streaming_enabled,
+                        split: settings.sentence_split_enabled,
                         origin: None,
                     },
                 )

@@ -175,9 +175,11 @@ pub enum Feature {
     TimeSignal,
     #[name = "ストリーミング合成"]
     Streaming,
+    #[name = "文分割"]
+    SentenceSplit,
 }
 
-/// 読み上げ／時報／ストリーミング合成を個別に有効・無効にする（サーバー単位）。
+/// 読み上げ／時報／ストリーミング合成／文分割を個別に有効・無効にする（サーバー単位）。
 #[poise::command(slash_command, guild_only)]
 pub async fn feature(
     ctx: Context<'_>,
@@ -207,6 +209,13 @@ pub async fn feature(
         Feature::Streaming => {
             data.db.set_streaming_enabled(guild_id, enabled).await?;
             "ストリーミング合成"
+        }
+        // 長文を。！？と改行で区切って 1 文ずつ合成する。喋り出しが速くなる。
+        Feature::SentenceSplit => {
+            data.db
+                .set_sentence_split_enabled(guild_id, enabled)
+                .await?;
+            "文分割"
         }
     };
 
@@ -252,7 +261,7 @@ pub async fn config(ctx: Context<'_>) -> Result<(), Error> {
 
     ctx.say(format!(
         "**サーバー設定**\n\
-         機能: 読み上げ {} / 音楽 {} / 時報 {} / ストリーミング合成 {}\n\
+         機能: 読み上げ {} / 音楽 {} / 時報 {} / ストリーミング合成 {} / 文分割 {}\n\
          時報: {}分おき・話者 {}\n\
          読み上げ中: {channel_list}\n\
          紐づけ:\n{binding_list}\n\
@@ -279,6 +288,11 @@ pub async fn config(ctx: Context<'_>) -> Result<(), Error> {
             "無効"
         },
         if settings.streaming_enabled {
+            "有効"
+        } else {
+            "無効"
+        },
+        if settings.sentence_split_enabled {
             "有効"
         } else {
             "無効"

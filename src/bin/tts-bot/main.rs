@@ -229,6 +229,7 @@ async fn speak(data: &Data, guild_id: serenity::GuildId, user_id: serenity::User
                 file: None,
                 // アナウンスは短く、ストリーミングにしても速くならない。
                 streaming: false,
+                split: true,
                 origin: None,
             },
         )
@@ -385,6 +386,7 @@ async fn handle_message(ctx: &serenity::Context, message: &serenity::Message, da
                 voice,
                 file,
                 streaming: settings.streaming_enabled,
+                split: settings.sentence_split_enabled,
                 origin: Some(message.channel_id),
             },
         )

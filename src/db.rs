@@ -30,6 +30,8 @@ pub struct GuildSettings {
     pub time_signal_style: u32,
     /// ストリーミング合成で読むか。ENGINE 0.26.0 以上が要るので既定は無効。
     pub streaming_enabled: bool,
+    /// 長文を文ごとに分けて合成するか。既定は有効。
+    pub sentence_split_enabled: bool,
 }
 
 impl Default for GuildSettings {
@@ -45,6 +47,7 @@ impl Default for GuildSettings {
             time_signal_interval: 60,
             time_signal_style: crate::voicevox::DEFAULT_STYLE.0,
             streaming_enabled: false,
+            sentence_split_enabled: true,
         }
     }
 }
@@ -251,7 +254,7 @@ impl Db {
         let row = sqlx::query(
             "SELECT max_length, read_bots, ignore_prefix, music_volume, tts_enabled, music_enabled,
                     time_signal_enabled, time_signal_interval, time_signal_style,
-                    streaming_enabled
+                    streaming_enabled, sentence_split_enabled
              FROM guild_settings WHERE guild_id = ?",
         )
         .bind(id(guild_id.get()))
@@ -272,6 +275,7 @@ impl Db {
             time_signal_interval: row.try_get::<i64, _>("time_signal_interval")?.max(1) as u32,
             time_signal_style: row.try_get::<i64, _>("time_signal_style")?.max(0) as u32,
             streaming_enabled: row.try_get::<i64, _>("streaming_enabled")? != 0,
+            sentence_split_enabled: row.try_get::<i64, _>("sentence_split_enabled")? != 0,
         })
     }
 
@@ -320,6 +324,15 @@ impl Db {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    pub async fn set_sentence_split_enabled(
+        &self,
+        guild_id: GuildId,
+        on: bool,
+    ) -> anyhow::Result<()> {
+        self.set_feature(guild_id, "sentence_split_enabled", on)
+            .await
     }
 
     pub async fn set_streaming_enabled(&self, guild_id: GuildId, on: bool) -> anyhow::Result<()> {
@@ -889,6 +902,17 @@ mod tests {
 
         // ストリーミング合成だけは既定で無効。
         assert!(!settings.streaming_enabled);
+        // 文分割は既定で有効。
+        assert!(settings.sentence_split_enabled);
+        db.set_sentence_split_enabled(guild, false)
+            .await
+            .expect("失敗");
+        assert!(
+            !db.guild_settings(guild)
+                .await
+                .expect("失敗")
+                .sentence_split_enabled
+        );
         db.set_streaming_enabled(guild, true).await.expect("失敗");
         assert!(
             db.guild_settings(guild)

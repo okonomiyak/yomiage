@@ -49,6 +49,8 @@ pub struct SpeechTask {
     pub file: Option<PathBuf>,
     /// ストリーミング合成を使う（ギルド設定 / ENGINE 0.26.0 以上）。
     pub streaming: bool,
+    /// 長文を文ごとに分けて合成する（ギルド設定）。
+    pub split: bool,
     /// 合成に失敗したときの通知先（PLAN §4）。入退室アナウンスなど、
     /// 通知先が無いものは None。
     pub origin: Option<ChannelId>,
@@ -290,7 +292,13 @@ impl Manager {
 
                 // 文ごとに合成して流す。ENGINE は文章全体の下ごしらえを済ませてから
                 // 喋り始めるので、まとめて投げると長文ほど待たされる（PLAN §13-18）。
-                for sentence in text::split_sentences(&task.text) {
+                let sentences = if task.split {
+                    text::split_sentences(&task.text)
+                } else {
+                    // 分けないときは改行を読点に戻して 1 回で投げる（分割を入れる前と同じ読み方）。
+                    vec![task.text.replace('\n', "、")]
+                };
+                for sentence in sentences {
                     if skipped_by_user.load(Ordering::Relaxed) >= message {
                         break;
                     }
