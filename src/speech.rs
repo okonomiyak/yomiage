@@ -17,6 +17,7 @@ use std::io::{self, SeekFrom};
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -29,6 +30,7 @@ use tokio::io::{AsyncRead, AsyncSeek, ReadBuf};
 use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit, Semaphore, mpsc};
 use tokio_util::io::StreamReader;
 
+use crate::text;
 use crate::voicevox::{self, Voice};
 
 /// 未合成のテキストを溜める上限。連投で溢れたぶんは捨てる（PLAN §4「キュー長上限」）。
@@ -64,11 +66,13 @@ pub struct Manager {
     playing: Arc<Mutex<HashMap<GuildId, Playing>>>,
 }
 
-/// 再生待ちの音声。
+/// 再生待ちの音声。長文は文ごとに分けて合成するので、1 発言が複数になる。
 struct Prepared {
     input: Input,
     /// 再生時間の見積もり。完了イベントを取りこぼしたときの保険にしか使わない。
     expected: Duration,
+    /// どの発言の音声か（パイプラインごとの通し番号）。`/skip` で残りの文もまとめて飛ばすのに使う。
+    message: u64,
 }
 
 impl Prepared {
@@ -76,6 +80,7 @@ impl Prepared {
         Self {
             expected: expected_duration(&wav),
             input: Input::from(wav),
+            message: 0,
         }
     }
 
@@ -99,8 +104,27 @@ impl Prepared {
                 None,
             ),
             expected: Duration::from_secs_f64(len as f64 / f64::from(voicevox::BYTES_PER_SEC)),
+            message: 0,
         }
     }
+}
+
+/// 1 文を合成する。ENGINE の枠はここで取る。
+async fn synthesize(
+    engine: &voicevox::Client,
+    engine_limit: &Arc<Semaphore>,
+    text: &str,
+    voice: Voice,
+    streaming: bool,
+) -> anyhow::Result<Prepared> {
+    let permit = engine_limit.clone().acquire_owned().await?;
+    let prepared = if streaming {
+        let (len, res) = engine.synthesize_stream(text, voice).await?;
+        Prepared::stream(len, res, permit)
+    } else {
+        Prepared::wav(engine.synthesize(text, voice).await?)
+    };
+    Ok(prepared)
 }
 
 /// ストリーミング合成の応答本文。seek はできない。
@@ -155,6 +179,9 @@ impl AsyncMediaSource for EngineStream {
 struct Playing {
     track: TrackHandle,
     done: Arc<Notify>,
+    /// 再生中の発言の番号と、飛ばした発言の番号（パイプラインと共有）。
+    message: u64,
+    skipped: Arc<AtomicU64>,
 }
 
 impl Manager {
@@ -194,11 +221,15 @@ impl Manager {
         }
     }
 
-    /// 再生中の 1 件を打ち切って次へ進める（`/skip`）。止めるものが無ければ false。
+    /// 再生中の 1 発言を打ち切って次へ進める（`/skip`）。止めるものが無ければ false。
     pub async fn skip(&self, guild_id: GuildId) -> bool {
         let Some(playing) = self.playing.lock().await.remove(&guild_id) else {
             return false;
         };
+        // 文ごとに分けた残りも、合成・再生の両方で捨てさせる。
+        playing
+            .skipped
+            .fetch_max(playing.message, Ordering::Relaxed);
         // stop() だけだと完了イベントが来る保証が無く、待機側が
         // タイムアウトまで止まってしまう。こちらからも起こす。
         let _ = playing.track.stop();
@@ -222,43 +253,62 @@ impl Manager {
         let (text_tx, mut text_rx) = mpsc::channel::<SpeechTask>(TEXT_QUEUE_LIMIT);
         let (audio_tx, mut audio_rx) = mpsc::channel::<Prepared>(AUDIO_QUEUE_LIMIT);
 
+        // `/skip` で飛ばした発言の番号。番号は 1 から振るので 0 は「まだ無い」。
+        let skipped = Arc::new(AtomicU64::new(0));
+
         // 合成タスク。1 件失敗しても止めず、そのメッセージだけ飛ばす。
         let engine = self.engine.clone();
         let engine_limit = self.engine_limit.clone();
         let http = self.http.clone();
+        let skipped_by_user = skipped.clone();
         tokio::spawn(async move {
             // ENGINE が落ちている間、毎回通知すると荒れるので 1 度だけ出す（PLAN §4）。
             let mut reported = false;
-            while let Some(task) = text_rx.recv().await {
+            let mut message = 0;
+            'tasks: while let Some(task) = text_rx.recv().await {
+                message += 1;
+
                 // 収録済み素材があるならそれを鳴らす。ENGINE は使わない。
-                let prepared = if let Some(path) = &task.file {
+                if let Some(path) = &task.file {
                     match tokio::fs::read(path).await {
-                        Ok(bytes) => Prepared::wav(bytes),
+                        Ok(bytes) => {
+                            let prepared = Prepared {
+                                message,
+                                ..Prepared::wav(bytes)
+                            };
+                            if audio_tx.send(prepared).await.is_err() {
+                                break;
+                            }
+                        }
                         Err(error) => {
                             tracing::warn!(%guild_id, %error, path = %path.display(),
                                 "failed to read exvoice file; skipping");
-                            continue;
                         }
                     }
-                } else {
-                    let Ok(permit) = engine_limit.clone().acquire_owned().await else {
+                    continue;
+                }
+
+                // 文ごとに合成して流す。ENGINE は文章全体の下ごしらえを済ませてから
+                // 喋り始めるので、まとめて投げると長文ほど待たされる（PLAN §13-18）。
+                for sentence in text::split_sentences(&task.text) {
+                    if skipped_by_user.load(Ordering::Relaxed) >= message {
                         break;
-                    };
-                    let result = if task.streaming {
-                        engine
-                            .synthesize_stream(&task.text, task.voice)
-                            .await
-                            .map(|(len, res)| Prepared::stream(len, res, permit))
-                    } else {
-                        engine
-                            .synthesize(&task.text, task.voice)
-                            .await
-                            .map(Prepared::wav)
-                    };
-                    match result {
+                    }
+                    let prepared = match synthesize(
+                        &engine,
+                        &engine_limit,
+                        &sentence,
+                        task.voice,
+                        task.streaming,
+                    )
+                    .await
+                    {
                         Ok(prepared) => {
                             reported = false;
-                            prepared
+                            Prepared {
+                                message,
+                                ..prepared
+                            }
                         }
                         Err(error) => {
                             tracing::warn!(%guild_id, %error, "synthesis failed; skipping message");
@@ -273,12 +323,13 @@ impl Manager {
                                     }
                                 }
                             }
-                            continue;
+                            // 途中の文が欠けると意味が通らないので、この発言の残りは読まない。
+                            break;
                         }
+                    };
+                    if audio_tx.send(prepared).await.is_err() {
+                        break 'tasks;
                     }
-                };
-                if audio_tx.send(prepared).await.is_err() {
-                    break;
                 }
             }
             tracing::debug!(%guild_id, "synthesis task finished");
@@ -289,7 +340,11 @@ impl Manager {
         let playing = self.playing.clone();
         tokio::spawn(async move {
             while let Some(prepared) = audio_rx.recv().await {
-                if let Err(error) = play(&songbird, &playing, guild_id, prepared).await {
+                // 飛ばした発言の残り（合成済みの文）は鳴らさない。
+                if prepared.message <= skipped.load(Ordering::Relaxed) {
+                    continue;
+                }
+                if let Err(error) = play(&songbird, &playing, &skipped, guild_id, prepared).await {
                     tracing::warn!(%guild_id, %error, "playback failed; skipping");
                 }
             }
@@ -303,8 +358,13 @@ impl Manager {
 async fn play(
     songbird: &Songbird,
     playing: &Mutex<HashMap<GuildId, Playing>>,
+    skipped: &Arc<AtomicU64>,
     guild_id: GuildId,
-    Prepared { input, expected }: Prepared,
+    Prepared {
+        input,
+        expected,
+        message,
+    }: Prepared,
 ) -> anyhow::Result<()> {
     let Some(call_lock) = songbird.get(guild_id) else {
         anyhow::bail!("VC に接続していない");
@@ -329,6 +389,8 @@ async fn play(
         Playing {
             track: track.clone(),
             done: done.clone(),
+            message,
+            skipped: skipped.clone(),
         },
     );
 

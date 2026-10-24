@@ -95,8 +95,8 @@ pub fn normalize(input: &str, options: &Options<'_>) -> Option<String> {
     let text = LAUGH.replace_all(&text, "わら").into_owned();
     let text = collapse_newlines(&text);
     let text = compress_repeats(&text);
-    // 前後の空白と、改行由来で余った読点を落とす。これをしないと
-    // 改行だけのメッセージが「、」として読み上げられてしまう。
+    // 前後の空白・改行と、余った読点を落とす。これをしないと
+    // 「、」だけのメッセージがそのまま読み上げられてしまう。
     let text = text
         .trim_matches(|ch: char| ch == '、' || ch.is_whitespace())
         .to_owned();
@@ -132,14 +132,54 @@ fn apply_dictionary(input: &str, dictionary: &[(String, String)]) -> String {
     text
 }
 
-/// 改行は「、」にする。連続していても 1 つにまとめる。
+/// 文の終わりとみなす記号。
+const SENTENCE_END: [char; 5] = ['。', '！', '？', '!', '?'];
+
+/// 読み上げ用テキストを文に分ける（`。！？` の後ろと改行の位置）。記号は前の文に残す。
+/// ENGINE は文章全体の下ごしらえを済ませてから喋り始めるので、長文は文ごとに投げる（PLAN §13-18）。
+pub fn split_sentences(text: &str) -> Vec<String> {
+    let mut sentences: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut flush = |current: &mut String| {
+        let piece = current.trim();
+        // 記号だけの切れ端は前の文に付ける。それだけ投げても読むものが無い。
+        let only_marks = piece
+            .chars()
+            .all(|ch| SENTENCE_END.contains(&ch) || ch == '、');
+        match sentences.last_mut() {
+            _ if piece.is_empty() => {}
+            Some(last) if only_marks => last.push_str(piece),
+            _ => sentences.push(piece.to_owned()),
+        }
+        current.clear();
+    };
+
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\n' {
+            flush(&mut current);
+            continue;
+        }
+        current.push(ch);
+        // 「！？」のように続く記号は同じ文に入れる。
+        if SENTENCE_END.contains(&ch)
+            && !chars.peek().is_some_and(|next| SENTENCE_END.contains(next))
+        {
+            flush(&mut current);
+        }
+    }
+    flush(&mut current);
+    sentences
+}
+
+/// 改行は文の区切りとして 1 つ残す（[`split_sentences`] が使う）。連続していても 1 つにまとめる。
 fn collapse_newlines(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut in_break = false;
     for ch in input.chars() {
         if ch == '\n' || ch == '\r' {
             if !in_break {
-                out.push('、');
+                out.push('\n');
                 in_break = true;
             }
         } else {
@@ -250,7 +290,7 @@ mod tests {
     fn code_blocks_are_omitted_including_their_contents() {
         assert_eq!(
             plain("見て\n```rust\nlet x = 1; // https://example.com\n```\nここ"),
-            Some("見て、コード省略、ここ".to_owned())
+            Some("見て\nコード省略\nここ".to_owned())
         );
     }
 
@@ -263,11 +303,53 @@ mod tests {
     }
 
     #[test]
-    fn newlines_become_punctuation_and_collapse() {
-        assert_eq!(plain("あ\nい"), Some("あ、い".to_owned()));
-        assert_eq!(plain("あ\n\n\n\nい"), Some("あ、い".to_owned()));
-        // 先頭と末尾の改行は落とす。「、」だけ読まれても意味が無い。
+    fn newlines_are_kept_as_boundaries_and_collapse() {
+        // 改行は文の区切りとして残す（split_sentences で使う）。
+        assert_eq!(plain("あ\nい"), Some("あ\nい".to_owned()));
+        assert_eq!(plain("あ\r\n\n\n\nい"), Some("あ\nい".to_owned()));
+        // 先頭と末尾の改行は落とす。
         assert_eq!(plain("\nあ\n"), Some("あ".to_owned()));
+    }
+
+    #[test]
+    fn sentences_split_after_terminators() {
+        assert_eq!(
+            split_sentences("おはよう。元気？うん！"),
+            ["おはよう。", "元気？", "うん！"]
+        );
+        assert_eq!(split_sentences("Hello! OK?"), ["Hello!", "OK?"]);
+    }
+
+    #[test]
+    fn sentences_split_at_newlines() {
+        assert_eq!(split_sentences("一行目\n二行目"), ["一行目", "二行目"]);
+    }
+
+    #[test]
+    fn consecutive_terminators_stay_together() {
+        assert_eq!(
+            split_sentences("ほんと！？すごい"),
+            ["ほんと！？", "すごい"]
+        );
+    }
+
+    #[test]
+    fn text_without_terminators_is_one_sentence() {
+        assert_eq!(split_sentences("区切りのない文"), ["区切りのない文"]);
+    }
+
+    #[test]
+    fn punctuation_only_pieces_join_the_previous_sentence() {
+        // 改行の直後の「。」だけを 1 文として投げても読むものが無い。
+        assert_eq!(split_sentences("あ\n。い"), ["あ。", "い"]);
+        // 前の文が無ければそのまま残す（記号だけのメッセージ）。
+        assert_eq!(split_sentences("？"), ["？"]);
+    }
+
+    #[test]
+    fn blank_pieces_are_dropped() {
+        assert_eq!(split_sentences("あ。 \n い"), ["あ。", "い"]);
+        assert!(split_sentences("").is_empty());
     }
 
     #[test]
