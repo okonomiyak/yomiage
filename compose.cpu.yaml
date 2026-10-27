@@ -1,0 +1,48 @@
+# CPU専用の予備機（自宅の別 Proxmox ホスト）向け。読み上げBot(tts-bot)だけを
+# ホットスタンバイとして動かす。GPU版の compose.yaml（本番・tts-bot+music-bot）
+# とは別ファイルで、deploy.sh / yomiage-ctl.sh に
+#   COMPOSE_FILE=compose.cpu.yaml
+# を渡して使う。music-bot は対象外（バックアップ範囲は読み上げのみ）。
+services:
+  voicevox:
+    image: voicevox/voicevox_engine:cpu-0.26.0   # 本番と同じバージョン（ストリーミング合成に要る）
+    container_name: voicevox
+    restart: unless-stopped
+    environment:
+      - VV_CPU_NUM_THREADS=2
+    expose:
+      - "50021"
+    healthcheck:
+      # 0.26.0 からイメージに curl が無いので、bash の /dev/tcp で /version を叩く。
+      test:
+        - CMD
+        - bash
+        - -c
+        - "exec 3<>/dev/tcp/127.0.0.1/50021 && printf 'GET /version HTTP/1.0\r\n\r\n' >&3 && head -n1 <&3 | grep -q ' 200 '"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks: [yomiage]
+
+  tts-bot:
+    build: .
+    container_name: yomiage-tts
+    command: ["tts-bot"]
+    restart: unless-stopped
+    depends_on:
+      voicevox:
+        condition: service_healthy
+    environment:
+      - DISCORD_TOKEN=${TTS_DISCORD_TOKEN}
+      - VOICEVOX_URL=http://voicevox:50021
+      - DATABASE_URL=sqlite:/data/bot.db
+      - RUST_LOG=${RUST_LOG:-info,yomiage_bot=debug,tts_bot=debug}
+      - GUILD_ID=${GUILD_ID:-}
+      # exVOICE素材は置かない（予備機は合成のみで動く。EXVOICE_DIR未設定なら
+      # tts-bot既定の"exVOICE"を見に行き、無ければ0件のまま起動する）。
+    volumes:
+      - ./data:/data
+    networks: [yomiage]
+
+networks:
+  yomiage:

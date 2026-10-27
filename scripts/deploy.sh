@@ -3,9 +3,13 @@
 #
 #   sh scripts/deploy.sh
 #
-# 環境変数で上書きできる: PVE_HOST / CTID / DEST
+# 環境変数で上書きできる: PVE_HOST / CTID / DEST / COMPOSE_FILE
 # 事前に LXC の $DEST/.env に TTS_DISCORD_TOKEN / MUSIC_DISCORD_TOKEN を
 # 置いておくこと（このスクリプトは触らない）。
+#
+# COMPOSE_FILE は既定で compose.yaml（本番・GPU版）。CPU専用機へ配るときは
+#   COMPOSE_FILE=compose.cpu.yaml sh scripts/deploy.sh
+# のように指定する。
 
 set -eu
 
@@ -20,6 +24,7 @@ fi
 PVE_HOST="${PVE_HOST:?PVE_HOST を .env に設定してください（例: root@10.0.0.1）}"
 CTID="${CTID:?CTID を .env に設定してください（例: 110）}"
 DEST="${DEST:-/opt/yomiage}"
+COMPOSE_FILE="${COMPOSE_FILE:-compose.yaml}"
 
 if ! git diff --quiet HEAD 2>/dev/null; then
     echo "警告: コミットしていない変更がある。送られるのは HEAD の内容だけ。" >&2
@@ -32,13 +37,13 @@ git archive --format=tar HEAD | ssh "$PVE_HOST" "pct exec $CTID -- tar -x -C $DE
 # 運用スクリプトは CT 内の /usr/local/bin にも置いておく（中で作業するとき用）。
 ssh "$PVE_HOST" "pct exec $CTID -- install -m 755 $DEST/scripts/yomiage-ctl.sh /usr/local/bin/yomiage"
 
-echo "== ビルドと再起動"
+echo "== ビルドと再起動 ($COMPOSE_FILE)"
 # tts-bot と music-bot は同じイメージ（Dockerfile）から作るので、両方まとめて
 # 再ビルドする。voicevox は変更が無ければキャッシュがそのまま使われる。
-ssh "$PVE_HOST" "pct exec $CTID -- sh -c 'cd $DEST && docker compose up -d --build'"
+ssh "$PVE_HOST" "pct exec $CTID -- sh -c 'cd $DEST && docker compose -f $COMPOSE_FILE up -d --build'"
 
 echo "== 状態"
-ssh "$PVE_HOST" "pct exec $CTID -- sh -c 'cd $DEST && docker compose ps'"
+ssh "$PVE_HOST" "pct exec $CTID -- sh -c 'cd $DEST && docker compose -f $COMPOSE_FILE ps'"
 
 echo
 echo "ログ: ssh $PVE_HOST \"pct exec $CTID -- docker logs -f yomiage-tts\""

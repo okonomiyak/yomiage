@@ -30,6 +30,8 @@ set -eu
 
 CTID="${CTID:-110}"
 DEST="${DEST:-/opt/yomiage}"
+# CPU専用の予備機では COMPOSE_FILE=compose.cpu.yaml を渡す。
+COMPOSE_FILE="${COMPOSE_FILE:-compose.yaml}"
 BOT_TTS="${BOT_TTS:-yomiage-tts}"
 BOT_MUSIC="${BOT_MUSIC:-yomiage-music}"
 ENGINE="${ENGINE:-voicevox}"
@@ -92,7 +94,7 @@ need_running() {
 }
 
 compose() {
-    in_ct sh -c "cd $DEST && docker compose $*"
+    in_ct sh -c "cd $DEST && docker compose -f $COMPOSE_FILE $*"
 }
 
 cmd_status() {
