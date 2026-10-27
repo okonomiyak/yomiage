@@ -315,7 +315,7 @@ iwaserver の Proxmox 移行に合わせ、**読み上げ Bot 専用の 1 コン
 | --- | --- | --- |
 | 種別 | LXC（Debian 12, unprivileged, `nesting=1`, `keyctl=1`） | Docker を動かすため nesting/keyctl 必須 |
 | vCPU | 3 | ENGINE の `VV_CPU_NUM_THREADS=2` + Bot 用に 1 |
-| RAM | **8 GB**（当初 3 GB） | ENGINE が実測 2.2 GB。そこに Docker 内の Rust ビルドが乗ると 3 GB では足りず、メモリと SWAP を使い切って OOM 寸前になった（2026-07-26）。ビルドを CT 内で行う限りは余裕を持たせる |
+| RAM | **10 GB**（当初 3 GB → 8 GB → 2026-10-24 に 10 GB） | voicevox コンテナには `mem_limit: 8g` を付けている（§13-18）。ENGINE が実測 2.2 GB。そこに Docker 内の Rust ビルドが乗ると 3 GB では足りず、メモリと SWAP を使い切って OOM 寸前になった（2026-07-26）。ビルドを CT 内で行う限りは余裕を持たせる |
 | ディスク | 20 GB | ENGINE イメージがモデル込みで数 GB ある |
 | ネットワーク | 既存ブリッジ + Tailscale（管理用） | Bot は外向き通信のみ、inbound 不要 |
 
@@ -381,6 +381,21 @@ networks:
 - Dockerfile はマルチステージ（`rust:bookworm` でビルド → `debian:bookworm-slim` で実行）。`cargo-chef` で依存キャッシュを効かせる。LXC 上でのビルドは遅いので、可能なら手元でビルドして registry 経由で配る運用も検討する。
 - `restart: unless-stopped` + `depends_on: service_healthy` で ENGINE 起動待ち。ENGINE が落ちても Bot は生かし、読み上げをスキップしてログに残す。
 - Prometheus に合成回数・合成レイテンシを export（既存 Grafana に載せる）。v1 では後回しでよいが、`/metrics` を足せる構造にしておく。
+
+### 10.4 予備機（standby）
+
+本番とは別の Proxmox ノードに、**読み上げ Bot（tts-bot）だけのホットスタンバイ**を置いている（`SUB_BOT_ID` で本番から参照される「予備 Bot」。§13-16 の参加案内を参照）。本番とは別の Discord アプリ（別トークン）で動く。
+
+| 項目 | 値 |
+| --- | --- |
+| 構成 | LXC、`/opt/yomiage`。GPU は無く CPU 合成 |
+| compose | `compose.cpu.yaml`（voicevox の CPU 版 + tts-bot のみ。music-bot と exVOICE は載せない）|
+| ENGINE | **本番と同じバージョンに揃える**（現在 `cpu-0.26.0`）。ストリーミング合成（§13-17）は 0.26.0 以上が要る |
+| DB | 本番の SQLite を `scripts/sync-standby-db.sh` で定期的に上書きする（予備機側の設定変更は消える）|
+
+- **本番をデプロイしたら予備機も同じコミットで更新する**。予備機だけ古いと、予備に切り替えたときに挙動が変わる（2026-10-26 に 7 週間分遅れていたのを更新した）。
+- デプロイは `deploy.sh` に接続先と compose を渡す: `PVE_HOST=<予備機> CTID=<予備機の CT> COMPOSE_FILE=compose.cpu.yaml sh scripts/deploy.sh`。接続先は公開リポジトリに書かない。
+- ENGINE を更新したら古いイメージを `docker rmi` で消す。ディスクが小さく、2 世代並ぶと 8 割を超える。
 
 ---
 
