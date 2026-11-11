@@ -196,7 +196,10 @@ fn compress_repeats(input: &str) -> String {
     let mut previous = None;
     let mut run = 0usize;
     for ch in input.chars() {
-        if Some(ch) == previous {
+        if ch.is_ascii_digit() {
+            previous = Some(ch);
+            run = 1;
+        } else if Some(ch) == previous{
             run += 1;
         } else {
             previous = Some(ch);
@@ -208,6 +211,7 @@ fn compress_repeats(input: &str) -> String {
     }
     out
 }
+
 
 /// 文字数上限。超えたら末尾に「以下略」を付ける（PLAN §4）。
 fn truncate(input: &str, max_length: usize) -> String {
