@@ -17,6 +17,7 @@ const UNKNOWN_CHANNEL: &str = "どこか";
 const CODE_BLOCK_READING: &str = "コード省略";
 const URL_READING: &str = "URL省略";
 const ATTACHMENT_READING: &str = "ファイル";
+const SPOILER_READING: &str = "スポイラー";
 const TRUNCATED_SUFFIX: &str = "以下略";
 
 /// 同じ文字がこれ以上続いたら圧縮する。
@@ -36,6 +37,8 @@ static ROLE_MENTION: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"<@&(\d+)>").expect("正規表現が不正"));
 static CHANNEL_MENTION: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"<#(\d+)>").expect("正規表現が不正"));
+static SPOILER: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?s)\|\|.+?\|\|").expect("正規表現が不正"));
 /// 笑いの `w` / `ｗ` の連続。単独の英単語を壊さないよう 2 文字以上に限る。
 static LAUGH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[wｗ]{2,}").expect("正規表現が不正"));
 
@@ -77,6 +80,7 @@ pub fn normalize(input: &str, options: &Options<'_>) -> Option<String> {
     let text = INLINE_CODE.replace_all(&text, "$1");
     let text = URL.replace_all(&text, URL_READING);
     let text = CUSTOM_EMOJI.replace_all(&text, "$1");
+    let text = SPOILER.replace_all(&text, SPOILER_READING);
 
     let text = USER_MENTION.replace_all(&text, |caps: &regex::Captures<'_>| {
         lookup(&options.names.users, &caps[1], UNKNOWN_USER)
